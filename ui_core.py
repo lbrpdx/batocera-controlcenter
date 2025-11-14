@@ -34,8 +34,6 @@ from shell import run_shell_capture, normalize_bool_str, get_primary_geometry, e
 
 ACTION_DEBOUNCE_MS = 100  # Faster response
 WINDOW_TITLE = "Batocera Control Center"
-WINDOW_TITLE_OSD = "Batocera OSD"
-
 
 def is_cmd(s: str) -> bool:
     s = (s or "").strip()
@@ -87,7 +85,7 @@ class UICore:
         is_wayland = "wayland" in backend
 
         win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
-        win.set_title(WINDOW_TITLE_OSD)
+        win.set_title(WINDOW_TITLE)
 
         # Undecorated on both X11 and Wayland
         win.set_decorated(False)
@@ -143,60 +141,84 @@ class UICore:
             # Ensure window is shown
             win.show_all()
             win.present()
-            
+
             # On Wayland/Sway, use swaymsg to make window visible
             if is_wayland:
                 def sway_commands():
                     import subprocess
                     import time
-                    
-                    # Wait for window to appear in Sway's tree (up to 1 second)
+                    import json
+
+                    # Wait for window to appear in Sway's tree and find its app_id
+                    app_id = None
+                    window_title = WINDOW_TITLE
+
                     for attempt in range(10):
                         try:
-                            result = subprocess.run(['swaymsg', '-t', 'get_tree'], 
+                            result = subprocess.run(['swaymsg', '-t', 'get_tree'],
                                                   capture_output=True, text=True, timeout=1)
-                            if 'controlcenter.py' in result.stdout:
-                                break
+                            if result.returncode == 0:
+                                tree = json.loads(result.stdout)
+
+                                # Find our window by title
+                                def find_window(node):
+                                    if isinstance(node, dict):
+                                        if node.get('name') == window_title or node.get('app_id', '').endswith('controlcenter'):
+                                            return node.get('app_id')
+                                        for child in node.get('nodes', []) + node.get('floating_nodes', []):
+                                            result = find_window(child)
+                                            if result:
+                                                return result
+                                    return None
+
+                                app_id = find_window(tree)
+                                if app_id:
+                                    break
                         except Exception:
                             pass
                         time.sleep(0.1)
-                    
+
+                    if not app_id:
+                        return False
+
                     # Manipulate the window to make it visible
                     try:
-                        # Make it floating and centered
-                        subprocess.run(['swaymsg', '[app_id="controlcenter.py"]', 'floating', 'enable'], 
+                        # Make it floating
+                        subprocess.run(['swaymsg', f'[app_id="{app_id}"]', 'floating', 'enable'],
                                      capture_output=True, timeout=1)
-                        subprocess.run(['swaymsg', '[app_id="controlcenter.py"]', 'move', 'position', 'center'], 
-                                     capture_output=True, timeout=1)
-                        
+
                         # Remove decorations (border)
-                        subprocess.run(['swaymsg', '[app_id="controlcenter.py"]', 'border', 'none'], 
+                        subprocess.run(['swaymsg', f'[app_id="{app_id}"]', 'border', 'none'],
                                      capture_output=True, timeout=1)
-                        
+
                         # Briefly fullscreen to force visibility, then restore
-                        subprocess.run(['swaymsg', '[app_id="controlcenter.py"]', 'fullscreen', 'enable'], 
+                        subprocess.run(['swaymsg', f'[app_id="{app_id}"]', 'fullscreen', 'enable'],
                                      capture_output=True, timeout=1)
                         time.sleep(0.05)
-                        subprocess.run(['swaymsg', '[app_id="controlcenter.py"]', 'fullscreen', 'disable'], 
+                        subprocess.run(['swaymsg', f'[app_id="{app_id}"]', 'fullscreen', 'disable'],
                                      capture_output=True, timeout=1)
-                        
+
+                        # Center the window (Sway config can override this if it has positioning rules)
+                        subprocess.run(['swaymsg', f'[app_id="{app_id}"]', 'move', 'position', 'center'],
+                                     capture_output=True, timeout=1)
+
                         # Focus the window
-                        subprocess.run(['swaymsg', '[app_id="controlcenter.py"]', 'focus'], 
+                        subprocess.run(['swaymsg', f'[app_id="{app_id}"]', 'focus'],
                                      capture_output=True, timeout=1)
                     except Exception:
                         pass
-                    
+
                     return False
-                
+
                 # Run sway commands in a background thread
                 import threading
                 threading.Thread(target=sway_commands, daemon=True).start()
-            
+
             try:
                 win.grab_focus()
             except Exception as e:
                 print(f"grab_focus failed: {e}")
-            
+
             # Focus first row
             if self.focus_rows:
                 GLib.timeout_add(10, lambda: (self.focus_rows[0].grab_focus(), False)[1])
@@ -208,7 +230,7 @@ class UICore:
             # Don't close if we have a dialog open
             if self._dialog_open:
                 return False
-            
+
             # Close window when it loses focus to another application
             def check_and_close():
                 # Check if we still have focus after a brief delay
@@ -242,8 +264,8 @@ class UICore:
 
                 prov.load_from_data(css_data)
             Gtk.StyleContext.add_provider_for_screen(
-                Gdk.Screen.get_default(), 
-                prov, 
+                Gdk.Screen.get_default(),
+                prov,
                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
             )
             print("CSS loaded successfully")
@@ -432,10 +454,10 @@ class UICore:
         def evdev_loop():
             import select
             import time
-            
+
             last_action = {}
             debounce_time = 0.15  # Faster gamepad response
-            
+
             try:
                 # Find all gamepad/joystick devices
                 for path in list_devices():
@@ -459,21 +481,21 @@ class UICore:
                                 self._gamepad_devices.append(device)
                     except Exception as e:
                         print(f"Error checking device {path}: {e}")
-                
+
                 if not self._gamepad_devices:
                     print("No gamepad devices found via evdev")
                     return
-                
+
                 # Track axis states to detect movement
                 axis_states = {}
                 for dev in self._gamepad_devices:
                     axis_states[dev.fd] = {}
-                
+
                 while self._gamepad_running:
                     # Use select to wait for events from any device
                     r, w, x = select.select(self._gamepad_devices, [], [], 0.1)
                     current_time = time.time()
-                    
+
                     for device in r:
                         try:
                             for event in device.read():
@@ -484,7 +506,7 @@ class UICore:
                                         last_time = last_action.get(action_key, 0)
                                         if current_time - last_time > debounce_time:
                                             last_action[action_key] = current_time
-                                            
+
                                             # Map common gamepad buttons
                                             if event.code in [ecodes.BTN_SOUTH, ecodes.BTN_A]:  # A button
                                                 GLib.idle_add(self._handle_gamepad_action, "activate")
@@ -499,18 +521,18 @@ class UICore:
                                                 GLib.idle_add(self._handle_gamepad_action, "axis_left")
                                             elif event.code == ecodes.BTN_DPAD_RIGHT:
                                                 GLib.idle_add(self._handle_gamepad_action, "axis_right")
-                                
+
                                 elif event.type == ecodes.EV_ABS:
                                     # Analog stick or D-pad
                                     fd = device.fd
                                     code = event.code
                                     value = event.value
-                                    
+
                                     # Get axis info for normalization
                                     abs_info = device.absinfo(code)
                                     center = (abs_info.max + abs_info.min) // 2
                                     threshold = (abs_info.max - abs_info.min) // 4
-                                    
+
                                     # Determine direction - support multiple axis types
                                     action_key = None
                                     # Vertical axes (left stick Y, right stick Y, D-pad Y)
@@ -525,7 +547,7 @@ class UICore:
                                             action_key = "axis_left"
                                         elif value > center + threshold:
                                             action_key = "axis_right"
-                                    
+
                                     if action_key:
                                         # Check if this is a new movement (debounce)
                                         last_time = last_action.get(action_key, 0)
@@ -534,7 +556,7 @@ class UICore:
                                             GLib.idle_add(self._handle_gamepad_action, action_key)
                         except Exception as e:
                             print(f"Error reading event: {e}")
-                            
+
             except Exception as e:
                 print(f"Evdev gamepad error: {e}")
             finally:
@@ -593,16 +615,16 @@ class UICore:
             axis_state = {}  # Track axis states to debounce
             axis_debounce_time = 0.3  # seconds
             last_axis_action = {}
-            
+
             try:
                 if sdl2.SDL_Init(sdl2.SDL_INIT_EVENTS | sdl2.SDL_INIT_GAMECONTROLLER | sdl2.SDL_INIT_JOYSTICK) != 0:
                     print(f"SDL_Init failed: {sdl2.SDL_GetError()}")
                     return
-                
+
                 # Open all available game controllers
                 num_joysticks = sdl2.SDL_NumJoysticks()
                 print(f"Found {num_joysticks} joystick(s)")
-                
+
                 for i in range(num_joysticks):
                     if sdl2.SDL_IsGameController(i):
                         controller = sdl2.SDL_GameControllerOpen(i)
@@ -614,13 +636,13 @@ class UICore:
                             print(f"Failed to open controller {i}: {sdl2.SDL_GetError()}")
                     else:
                         print(f"Joystick {i} is not a game controller")
-                
+
                 if not controllers:
                     print("No game controllers opened")
-                
+
                 running = True
                 import time
-                
+
                 while running:
                     ev = sdl2.SDL_Event()
                     while sdl2.SDL_PollEvent(ev):
@@ -656,7 +678,7 @@ class UICore:
                         elif t == sdl2.SDL_CONTROLLERAXISMOTION:
                             axis, val, thr = ev.caxis.axis, ev.caxis.value, 12000
                             current_time = time.time()
-                            
+
                             # Debounce axis motion
                             action_key = None
                             if axis == sdl2.SDL_CONTROLLER_AXIS_LEFTY:
@@ -669,7 +691,7 @@ class UICore:
                                     action_key = "axis_left"
                                 elif val > thr:
                                     action_key = "axis_right"
-                            
+
                             if action_key:
                                 last_time = last_axis_action.get(action_key, 0)
                                 if current_time - last_time > axis_debounce_time:
@@ -682,7 +704,7 @@ class UICore:
                                         GLib.idle_add(self.row_left)
                                     elif action_key == "axis_right":
                                         GLib.idle_add(self.row_right)
-                    
+
                     sdl2.SDL_Delay(8)
             except Exception as e:
                 print(f"SDL error: {e}")
@@ -756,7 +778,7 @@ class UICore:
         # Use expansion if: has ${, OR doesn't match pure ${...} format
         if "${" in disp and not is_cmd(disp):
             # Mixed content or multiple commands - use command substitution
-            def upd_expand(_l=lbl, _disp=disp): 
+            def upd_expand(_l=lbl, _disp=disp):
                 _l.set_text(expand_command_string(_disp))
             # Create a dummy refresh task that calls our update function
             class ExpandRefreshTask:
@@ -764,21 +786,21 @@ class UICore:
                     self.update_fn = update_fn
                     self.interval_ms = max(250, int(interval_sec * 1000))
                     self._timer_id = None
-                
+
                 def start(self):
                     self._schedule_tick(immediate=True)
-                
+
                 def _schedule_tick(self, immediate=False):
                     delay = 10 if immediate else self.interval_ms
                     self._timer_id = GLib.timeout_add(delay, self._tick)
-                
+
                 def _tick(self):
                     def work():
                         GLib.idle_add(self.update_fn)
                     threading.Thread(target=work, daemon=True).start()
                     self._schedule_tick(immediate=False)
                     return False
-            
+
             self.refreshers.append(ExpandRefreshTask(upd_expand, refresh))
             # Set initial value
             lbl.set_text(expand_command_string(disp))
@@ -868,25 +890,25 @@ class UICore:
             initial_active = normalize_bool_str(initial_val)
             tbtn.set_active(initial_active)
             update_toggle_label()
-            
+
             def upd(val: str, _lbl=status_lbl, _tb=tbtn):
                 import time
                 # Don't update if we just changed it (within 1 second)
                 if time.time() - toggle_state["last_user_change"] < 1.0:
                     return
-                
+
                 txt = (val or "").strip()
                 if _lbl:
                     _lbl.set_text(txt)
                 active = normalize_bool_str(txt)
-                
+
                 # Only update if different and not currently updating
                 if not toggle_state["updating"] and _tb.get_active() != active:
                     toggle_state["updating"] = True
                     _tb.set_active(active)
                     update_toggle_label()
                     toggle_state["updating"] = False
-            
+
             self.refreshers.append(RefreshTask(upd, status_cmd, refresh))
         else:
             # If no status command, just show ON/OFF based on initial state
@@ -897,15 +919,15 @@ class UICore:
             # Ignore toggle events triggered by refresh updates
             if toggle_state["updating"]:
                 return
-            
+
             update_toggle_label()
             key = f"toggle:{parent_label or 'toggle'}"
             if not self.debouncer.allow(key):
                 return
-            
+
             # Mark that user just changed it
             toggle_state["last_user_change"] = time.time()
-            
+
             act = action_on if tbtn.get_active() else action_off
             if act:
                 threading.Thread(target=lambda: run_shell_capture(act), daemon=True).start()
@@ -946,9 +968,9 @@ class UICore:
                 path_or_url = path_or_url.strip()
                 if not path_or_url:
                     return None
-                
+
                 pixbuf = None
-                
+
                 # Check if it's a URL
                 if path_or_url.startswith(("http://", "https://")):
                     # Download from URL
@@ -962,12 +984,12 @@ class UICore:
                     # Load from file
                     if os.path.exists(path_or_url):
                         pixbuf = GdkPixbuf.Pixbuf.new_from_file(path_or_url)
-                
+
                 if pixbuf:
                     # Scale if needed
                     orig_width = pixbuf.get_width()
                     orig_height = pixbuf.get_height()
-                    
+
                     if target_width and target_height:
                         # Both specified
                         pixbuf = pixbuf.scale_simple(target_width, target_height, GdkPixbuf.InterpType.BILINEAR)
@@ -981,7 +1003,7 @@ class UICore:
                         aspect = orig_width / orig_height
                         new_width = int(target_height * aspect)
                         pixbuf = pixbuf.scale_simple(new_width, target_height, GdkPixbuf.InterpType.BILINEAR)
-                    
+
                     return pixbuf
             except Exception as e:
                 print(f"Error loading image from '{path_or_url}': {e}")
@@ -1051,7 +1073,7 @@ def ui_build_containers(core: UICore, xml_root):
         if child.kind == "hgroup":
             title = (child.attrs.get("display", "") or "").strip()
             target = _get_group_container_new(core, content_box, title)
-            
+
             # Process all children normally - vgroups create rows
             for sub in child.children:
                 if sub.kind == "vgroup":
@@ -1145,13 +1167,13 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
             cell_event.get_style_context().add_class("vgroup-cell")
             if len(cells) == 0:
                 cell_event.get_style_context().add_class("vgroup-cell-first")
-            
+
             cell_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             cell_event.add(cell_box)
-            
+
             # Build the text element
             core.build_text(vg, child, cell_box, align_end=False)
-            
+
             # Text-only cells have no controls, so they're not interactive
             cells.append((cell_event, []))
             row_box.pack_start(cell_event, True, True, 0)
@@ -1163,13 +1185,13 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
             cell_event.get_style_context().add_class("vgroup-cell")
             if len(cells) == 0:
                 cell_event.get_style_context().add_class("vgroup-cell-first")
-            
+
             cell_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             cell_event.add(cell_box)
-            
+
             # Build the img element
             core.build_img(vg, child, cell_box, pack_end=False)
-            
+
             # Img-only cells have no controls, so they're not interactive
             cells.append((cell_event, []))
             row_box.pack_start(cell_event, True, True, 0)
@@ -1181,11 +1203,11 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
             cell_event.get_style_context().add_class("vgroup-cell")
             if len(cells) == 0:
                 cell_event.get_style_context().add_class("vgroup-cell-first")
-            
+
             # Create a horizontal box to hold the nested vgroup's features inline
             cell_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             cell_event.add(cell_box)
-            
+
             # Process nested vgroup's children inline
             for nested_child in child.children:
                 if nested_child.kind == "feature":
@@ -1195,14 +1217,14 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                         lbl.get_style_context().add_class("item-text")
                         lbl.set_xalign(0.0)
                         cell_box.pack_start(lbl, False, False, 0)
-                    
+
                     # Add feature children inline
                     for sub in nested_child.children:
                         if sub.kind == "text":
                             core.build_text(nested_child, sub, cell_box, align_end=False)
                         elif sub.kind == "img":
                             core.build_img(nested_child, sub, cell_box, pack_end=False)
-            
+
             cells.append((cell_event, []))
             row_box.pack_start(cell_event, True, True, 0)
             continue
@@ -1213,35 +1235,35 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
             cell_event.get_style_context().add_class("vgroup-cell")
             if len(cells) == 0:
                 cell_event.get_style_context().add_class("vgroup-cell-first")
-            
+
             cell_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
             cell_event.add(cell_box)
-            
+
             # Process hgroup children (features, text, img, etc.)
             for hg_child in child.children:
                 if hg_child.kind == "feature":
                     feat_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                    
+
                     label_text = (hg_child.attrs.get("display", "") or hg_child.attrs.get("name", "") or "").strip()
                     if label_text:
                         lbl = Gtk.Label(label=label_text)
                         lbl.get_style_context().add_class("item-text")
                         lbl.set_xalign(0.0)
                         feat_box.pack_start(lbl, False, False, 0)
-                    
+
                     # Add feature children
                     for sub in hg_child.children:
                         if sub.kind == "text":
                             core.build_text(hg_child, sub, feat_box, align_end=False)
                         elif sub.kind == "img":
                             core.build_img(hg_child, sub, feat_box, pack_end=False)
-                    
+
                     cell_box.pack_start(feat_box, False, False, 3)
                 elif hg_child.kind == "text":
                     core.build_text(child, hg_child, cell_box, align_end=False)
                 elif hg_child.kind == "img":
                     core.build_img(child, hg_child, cell_box, pack_end=False)
-            
+
             cells.append((cell_event, []))
             row_box.pack_start(cell_event, True, True, 0)
             continue
@@ -1283,10 +1305,10 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                 btn.get_style_context().add_class("cc-button-confirm")
                 btn.set_can_focus(True)
                 cell_box.pack_start(btn, False, False, 6)
-                
+
                 def on_confirm_click(_w, _core=core, _text=text, _action=action):
                     _show_confirm_dialog(_core, _text, _action)
-                
+
                 btn.connect("clicked", on_confirm_click)
                 cell_controls.append(btn)
             elif sub.kind == "toggle":
@@ -1300,7 +1322,7 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
             feature_label = label_text or "Option"
             def open_choice(_core=core, _label=feature_label, _choices=choices):
                 _open_choice_popup(_core, _label, _choices)
-            
+
             choice_btn = Gtk.Button.new_with_label("Select")
             choice_btn.get_style_context().add_class("cc-button")
             choice_btn.get_style_context().add_class("cc-choice")
@@ -1313,7 +1335,7 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
         if not is_header_row and cell_controls:
             cell_event.set_can_focus(True)
             cell_event.add_events(Gdk.EventMask.KEY_PRESS_MASK | Gdk.EventMask.FOCUS_CHANGE_MASK | Gdk.EventMask.BUTTON_PRESS_MASK)
-            
+
             # Store control index for this cell
             cell_event._control_index = 0
 
@@ -1356,10 +1378,10 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                 ctrl_idx = getattr(cell_ev, "_control_index", 0)
                 ctrl_idx = max(0, min(len(controls) - 1, ctrl_idx))
                 cell_ev._control_index = ctrl_idx
-                
+
                 # Don't highlight the cell background, only the control
                 # cell_ev.get_style_context().add_class("focused-cell")
-                
+
                 # Highlight only the current control
                 ctrl = controls[ctrl_idx]
                 ctx = ctrl.get_style_context()
@@ -1371,7 +1393,7 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
             """Navigate to previous control (within cell or previous cell)"""
             cell_ev, controls = row._cells[row._cell_index]
             ctrl_idx = getattr(cell_ev, "_control_index", 0)
-            
+
             if ctrl_idx > 0:
                 # Move to previous control in same cell
                 _clear_all_highlights()
@@ -1394,7 +1416,7 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
             """Navigate to next control (within cell or next cell)"""
             cell_ev, controls = row._cells[row._cell_index]
             ctrl_idx = getattr(cell_ev, "_control_index", 0)
-            
+
             if ctrl_idx < len(controls) - 1:
                 # Move to next control in same cell
                 _clear_all_highlights()
@@ -1492,10 +1514,10 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
             btn.set_can_focus(True)
             btn.set_size_request(70, -1)
             row_box.pack_start(btn, False, False, 8)
-            
+
             def on_confirm_click(_w):
                 _show_confirm_dialog(core, text, action)
-            
+
             btn.connect("clicked", on_confirm_click)
             row._items.append(btn)
 
@@ -1507,33 +1529,33 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
             row_box.pack_start(lbl, False, False, 8)
             disp = (sub.attrs.get("display", "") or "").strip()
             refresh = int(sub.attrs.get("refresh", feat.attrs.get("refresh", DEFAULT_REFRESH_SEC)))
-            
+
             # Check if display contains ${...} command substitution
             if "${" in disp and not is_cmd(disp):
                 # Mixed content or multiple commands - use command substitution
-                def upd_expand(_l=lbl, _disp=disp): 
+                def upd_expand(_l=lbl, _disp=disp):
                     _l.set_text(expand_command_string(_disp))
-                
+
                 class ExpandRefreshTask:
                     def __init__(self, update_fn, interval_sec):
                         self.update_fn = update_fn
                         self.interval_ms = max(250, int(interval_sec * 1000))
                         self._timer_id = None
-                    
+
                     def start(self):
                         self._schedule_tick(immediate=True)
-                    
+
                     def _schedule_tick(self, immediate=False):
                         delay = 1 if immediate else self.interval_ms
                         self._timer_id = GLib.timeout_add(delay, self._tick)
-                    
+
                     def _tick(self):
                         def work():
                             GLib.idle_add(self.update_fn)
                         threading.Thread(target=work, daemon=True).start()
                         self._schedule_tick(immediate=False)
                         return False
-                
+
                 core.refreshers.append(ExpandRefreshTask(upd_expand, refresh))
                 lbl.set_text(expand_command_string(disp))
             elif is_cmd(disp):
@@ -1877,7 +1899,7 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
                 import time
                 time.sleep(0.1)
                 # Remove border from any dialog window
-                subprocess.run(['swaymsg', '[title="^$"]', 'border', 'none'], 
+                subprocess.run(['swaymsg', '[title="^$"]', 'border', 'none'],
                              capture_output=True, timeout=1)
             except Exception:
                 pass
