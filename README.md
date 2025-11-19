@@ -284,8 +284,8 @@ Generates and displays a QR code from text, URL, or command output. Requires the
 <!-- Static QR code from URL -->
 <qrcode display="https://batocera.org" width="150" height="150" />
 
-<!-- Static QR code from text -->
-<qrcode display="Hello World" />
+<!-- Static QR code from text, with a dark background -->
+<qrcode display="Hello World" bg="#141821" />
 
 <!-- Dynamic QR code from command -->
 <qrcode display="${echo https://example.com/status}" refresh="1" />
@@ -297,6 +297,7 @@ Generates and displays a QR code from text, URL, or command output. Requires the
 - `height`: QR code height in pixels (optional, default: 200)
 - `refresh`: Update interval in seconds (default: 0 = no refresh). Can be integer or float (e.g., `1`, `0.5`, `2.5`)
 - `align`: QR code alignment - `left`, `center` (default), or `right`
+- `bg`: HTML hex code for the background of the QR code - foreground color will be contrasting white or black automatically
 
 **Notes:**
 - Requires `qrcode` Python library (already installed on Batocera)
@@ -305,21 +306,21 @@ Generates and displays a QR code from text, URL, or command output. Requires the
 - If neither width nor height is specified, defaults to 200x200 pixels
 - Useful for sharing URLs, WiFi credentials, or dynamic status information
 
-#### `<pdf>` - PDF/Image Viewer Button
-Creates a button that opens a fullscreen viewer for PDFs or images.
+#### `<pdf>` - PDF/Image/CBZ Viewer Button
+Creates a button that opens a fullscreen viewer for PDFs, images, or comic book archives (CBZ).
 
 ```xml
 <!-- View a local PDF -->
-<pdf name="View Manual" display="/usr/share/docs/manual.pdf" />
+<pdf name="View Manual" display="/userdata/roms/atari2600/manuals/manual.pdf" />
 
-<!-- View an image -->
-<pdf name="View Screenshot" display="/tmp/screenshot.png" />
+<!-- View a comic book archive -->
+<pdf name="View Comic" display="/userdata/library/comic.cbz" />
 
 <!-- View from URL -->
 <pdf name="Online Doc" display="https://example.com/document.pdf" />
 
 <!-- Dynamic path from command -->
-<pdf name="Latest Log" display="${find /var/log -name '*.pdf' | head -1}" />
+<pdf name="Latest screenshot" display="${find /userdata/screenshots -name 'screenshot*.png' | head -1}" />
 ```
 
 **Attributes:**
@@ -331,15 +332,20 @@ Creates a button that opens a fullscreen viewer for PDFs or images.
 - **PDF**: Requires `pdftoppm` and `pdfinfo` (from poppler-utils package)
   - Multi-page navigation with Previous/Next buttons
   - Gamepad: Left/Right or A button to navigate, B to close
+- **CBZ**: Comic Book Archive (ZIP file containing images)
+  - Multi-page navigation with Previous/Next buttons
+  - Images sorted naturally by filename
+  - Gamepad: Left/Right or A button to navigate, B to close
 - **Images**: JPG, PNG, GIF, and other formats supported by GdkPixbuf
   - Gamepad: A or B button to close
 
 **Notes:**
 - Opens in fullscreen overlay window
 - PDFs are rendered at 150 DPI for good quality
+- CBZ files are extracted and images displayed in natural sort order
 - Images are automatically scaled to fit screen
 - Supports both local files and HTTP/HTTPS URLs
-- Requires `pdftoppm` and `pdfinfo` commands (usually pre-installed on Batocera)
+- Requires `pdftoppm` and `pdfinfo` commands for PDF support (usually pre-installed on Batocera)
 
 ### Refresh Behavior
 

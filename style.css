@@ -1,144 +1,143 @@
-/* Batocera Control Center - GTK3 Compatible CSS */
+/* Batocera Control Center - Dark Theme (GTK3 CSS) */
 
-* {
-  font-size: 16pt;
-}
+/* Global */
+* { font-size: 16pt; }
 
 .popup-root {
-  background-color: #f8f9fb;
-  color: #1a1d29;
+  background-color: #0f1115;
+  color: #e6e9ef;
 }
 
-.header {
-  color: #2d3142;
-  font-weight: bold;
-  font-size: 16pt;
+/* Text styles */
+.header, .item-text, .group-title {
+  color: #e6e9ef;
 }
-
-/* Fixed width for header values to prevent shifting */
-.vgroup-row .header + .value,
-.vgroup-row .value {
-  min-width: 120px;
-}
-
-.item-text {
-  color: #2d3142;
-  font-size: 16pt;
-}
-
 .value {
-  color: #1976d2;
-  font-weight: bold;
-  font-size: 16pt;
+  color: #63a4ff;
 }
 
-/* All buttons */
-button {
-  border-radius: 20px;
-  padding: 12px 24px;
-  font-weight: bold;
-  font-size: 16pt;
-  min-width: 85px;
-  border: 3px solid transparent;
-}
-
-button.cc-button, button.cc-choice, button.choice-option {
-  background-color: #e3e8f0;
-  color: #1a1d29;
-  border-color: #b8c5d6;
-}
-
-/* Toggles */
-button.cc-toggle {
-  background-color: #bdbdbd;
-  color: #000000;
-  border-color: #757575;
-  font-size: 16pt;
-  min-width: 100px;
-}
-
-button.cc-toggle:checked {
-  background-color: #66bb6a;
-  border-color: #43a047;
-}
-
-/* Focused row - no background, only controls get highlighted */
-.focused {
-  background-color: transparent;
-}
-
-/* Separator */
-.section-separator {
-  background-color: #d7dde6;
-  min-height: 2px;
-}
-
-/* vgroup */
-.vgroup-row {
-  padding: 6px 0;
-}
-
-.vgroup-cell {
-  background-color: #ffffff;
-  padding: 8px 12px;
-}
-
-.vgroup-cell-first {
-  min-width: 180px;
-}
-
-/* Selection - light blue background for selected items */
-.focused-cell {
-  background-color: transparent;
-  border-color: #1976d2;
-}
-
-.choice-selected {
-  background-color: #bbdefb;
-  border-color: #1976d2;
-  color: #000000;
-  font-weight: bold;
-}
-
-/* Selected/focused buttons - light blue background */
-button.choice-selected,
-button.focused-cell,
-button.cc-button.choice-selected,
-button.cc-button.focused-cell,
-button.cc-button:focus {
-  background-color: #bbdefb;
-  background-image: none;
-  border-color: #1976d2;
-  color: #000000;
-}
-
-button.cc-toggle.choice-selected,
-button.cc-toggle.focused-cell,
-button.cc-toggle:focus {
-  background-color: #bbdefb;
-  background-image: none;
-  border-color: #1976d2;
-}
-
-/* Popup dialogs - single clean border */
-.confirm-dialog {
-  border: 3px solid #1976d2;
-  border-radius: 12px;
-  background-color: #f8f9fb;
-}
-
-/* Group frame */
+/* Layout helpers */
+.vgroup-row { padding: 6px 0; }
+.vgroup-cell { background-color: #141821; padding: 8px 12px; }
+.vgroup-cell-first { min-width: 180px; }
+.vgroup-row .header + .value, .vgroup-row .value { min-width: 120px; }
+.section-separator { background-color: #232a36; min-height: 2px; }
 .group-frame {
-  border: 2px solid #d4dce8;
+  border: 2px solid #232a36;
   border-radius: 16px;
   margin: 14px 0;
   padding: 16px;
-  background-color: #ffffff;
+  background-color: #141821;
 }
 
-.group-title {
-  color: #1976d2;
-  font-size: 16pt;
-  font-weight: bold;
-  padding: 0 12px;
+/* Base button surface: dark, no gradients */
+button {
+  border-radius: 20px;
+  padding: 12px 24px;
+  min-width: 85px;
+  border: 3px solid #232a36;
+  background-color: #12161f;
+  background-image: none;
+  color: #e6e9ef; /* fallback if no nested label */
 }
+
+/* Button label (GtkLabel) */
+button > label {
+  color: #e6e9ef;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+/* Neutral button classes explicitly kept dark */
+button.cc-button,
+button.cc-choice,
+button.choice-option {
+  background-color: #12161f;
+  border-color: #232a36;
+  color: #e6e9ef;
+}
+
+/* Hover: subtle lift but still dark */
+button.cc-button:hover,
+button.cc-choice:hover,
+button.choice-option:hover {
+  background-color: #171c26;
+  border-color: #2c3442;
+}
+button.cc-button:hover > label,
+button.cc-choice:hover > label,
+button.choice-option:hover > label {
+  color: #f3f6fb;
+}
+
+/* Selected/focused: dark accent (never light) */
+button.cc-button.choice-selected,
+button.cc-button.focused-cell,
+button.cc-button:focus,
+button.cc-choice.choice-selected,
+button.choice-option.choice-selected,
+button.focused-cell {
+  background-color: #142439;   /* dark blue accent */
+  border-color: #4f8dff;
+  color: #ffffff;
+  background-image: none;
+}
+button.cc-button.choice-selected > label,
+button.cc-button.focused-cell > label,
+button.cc-button:focus > label,
+button.cc-choice.choice-selected > label,
+button.choice-option.choice-selected > label,
+button.focused-cell > label {
+  color: #ffffff;
+}
+
+/* Disabled: darker and dim text */
+button:disabled,
+button.cc-button:disabled,
+button.cc-choice:disabled,
+button.choice-option:disabled {
+  background-color: #0c1016;
+  color: #7f8896;
+  border-color: #1a202a;
+}
+
+/* Toggles: dark base; checked is muted, not bright */
+button.cc-toggle {
+  background-color: #2b313c;
+  color: #ffffff;
+  border: 3px solid #3a4250;
+  border-radius: 20px;
+  padding: 12px 24px;
+  min-width: 100px;
+  background-image: none;
+}
+button.cc-toggle:checked {
+  background-color: #1f3b2a; /* muted green */
+  border-color: #1a2f22;
+  color: #e6e9ef;
+}
+button.cc-toggle.choice-selected,
+button.cc-toggle.focused-cell,
+button.cc-toggle:focus {
+  background-color: #142439;
+  border-color: #4f8dff;
+  color: #ffffff;
+}
+
+/* Choice selection (non-button contexts that get the class) */
+.choice-selected {
+  background-color: #142439;
+  border-color: #4f8dff;
+  color: #ffffff;
+}
+
+/* Dialogs */
+.confirm-dialog {
+  border: 3px solid #4f8dff;
+  border-radius: 12px;
+  background-color: #0f1115;
+}
+
+/* Focused row background stays transparent; only controls highlight */
+.focused { background-color: transparent; }
+

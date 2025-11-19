@@ -40,6 +40,7 @@ def _open_pdf_viewer(core, file_path: str):
     from gi.repository import GdkPixbuf
 
     core._dialog_open = True
+    core._suspend_inactivity_timer = True
 
     # Download file if it's a URL
     local_path = file_path
@@ -62,13 +63,14 @@ def _open_pdf_viewer(core, file_path: str):
             core._dialog_open = False
             return
 
-    # Check if it's a PDF or image based on file extension
+    # Check if it's a PDF, CBZ, or image based on file extension
     lower_path = local_path.lower()
     is_pdf = lower_path.endswith('.pdf')
+    is_cbz = lower_path.endswith('.cbz')
     is_image = any(lower_path.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'])
 
     # If we can't determine from extension, try to detect from content (magic numbers)
-    if not is_pdf and not is_image:
+    if not is_pdf and not is_cbz and not is_image:
         try:
             with open(local_path, 'rb') as f:
                 header = f.read(16)  # Read more bytes for better detection
@@ -77,6 +79,10 @@ def _open_pdf_viewer(core, file_path: str):
                 if header.startswith(b'%PDF'):
                     is_pdf = True
                     # print("Detected as PDF from content")
+                # Check for ZIP/CBZ magic number (PK)
+                elif header.startswith(b'PK\x03\x04') or header.startswith(b'PK\x05\x06'):
+                    is_cbz = True
+                    # print("Detected as CBZ/ZIP from content")
                 # Check for common image formats
                 elif header.startswith(b'\x89PNG'):
                     is_image = True
@@ -105,6 +111,26 @@ def _open_pdf_viewer(core, file_path: str):
     viewer.set_modal(True)
     viewer.set_transient_for(core.window)
     viewer.get_style_context().add_class("popup-root")
+
+    # Track if viewer is fully initialized (to ignore initial focus-out during fullscreen transition)
+    viewer_initialized = [False]
+
+    # Close everything if viewer loses focus to external app
+    def on_viewer_focus_out(*_):
+        # Ignore focus-out during initial setup
+        if not viewer_initialized[0]:
+            return False
+
+        def check_and_close():
+            if not viewer.is_active():
+                core.quit()
+            return False
+        GLib.timeout_add(200, check_and_close)
+        return False
+    viewer.connect("focus-out-event", on_viewer_focus_out)
+
+    # Mark viewer as initialized after fullscreen transition completes
+    GLib.timeout_add(1000, lambda: (viewer_initialized.__setitem__(0, True), False)[1])
 
     main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
     viewer.add(main_box)
@@ -292,14 +318,130 @@ def _open_pdf_viewer(core, file_path: str):
             error_label = Gtk.Label(label=f"Error loading PDF: {e}\nMake sure pdftoppm and pdfinfo are installed.")
             error_label.set_line_wrap(True)
             main_box.pack_start(error_label, True, True, 20)
+
+    elif is_cbz:
+        # CBZ handling (Comic Book Archive - ZIP file with images)
+        try:
+            import zipfile
+
+            # Extract CBZ to temp directory
+            temp_dir = tempfile.mkdtemp()
+            temp_files.append(temp_dir)
+
+            # Extract all files
+            with zipfile.ZipFile(local_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_dir)
+
+            # Find all image files in the extracted directory
+            image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
+            image_files = []
+
+            for root, dirs, files in os.walk(temp_dir):
+                for file in files:
+                    if file.lower().endswith(image_extensions):
+                        image_files.append(os.path.join(root, file))
+
+            # Sort images naturally (by filename)
+            import re
+            def natural_sort_key(s):
+                return [int(text) if text.isdigit() else text.lower()
+                        for text in re.split('([0-9]+)', s)]
+            image_files.sort(key=natural_sort_key)
+
+            if not image_files:
+                raise Exception("No images found in CBZ file")
+
+            page_count = len(image_files)
+            current_page = [0]  # 0-indexed for list access
+
+            def render_page(page_num):
+                if 0 <= page_num < page_count:
+                    try:
+                        image_file = image_files[page_num]
+                        pixbuf = GdkPixbuf.Pixbuf.new_from_file(image_file)
+
+                        # Scale to fit screen
+                        screen_width = core.window.get_screen().get_width()
+                        screen_height = core.window.get_screen().get_height() - 100
+
+                        orig_width = pixbuf.get_width()
+                        orig_height = pixbuf.get_height()
+
+                        scale = min(screen_width / orig_width, screen_height / orig_height, 1.0)
+                        if scale < 1.0:
+                            new_width = int(orig_width * scale)
+                            new_height = int(orig_height * scale)
+                            pixbuf = pixbuf.scale_simple(new_width, new_height, GdkPixbuf.InterpType.BILINEAR)
+
+                        img.set_from_pixbuf(pixbuf)
+                        current_page[0] = page_num
+
+                        # Update button sensitivity (only if multi-page)
+                        if page_count > 1:
+                            prev_btn.set_sensitive(page_num > 0)
+                            next_btn.set_sensitive(page_num < page_count - 1)
+                            page_label.set_text(f"Page {page_num + 1} / {page_count}")
+
+                    except Exception as e:
+                        print(f"Error rendering page {page_num + 1}: {e}")
+
+            # Navigation buttons for CBZ
+            button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            button_box.set_halign(Gtk.Align.CENTER)
+            button_box.set_border_width(10)
+            main_box.pack_start(button_box, False, False, 0)
+
+            # Only show prev/next buttons if more than one page
+            if page_count > 1:
+                prev_btn = Gtk.Button.new_with_label("◀ Previous")
+                prev_btn.get_style_context().add_class("cc-button")
+                prev_btn.connect("clicked", lambda *_: render_page(current_page[0] - 1))
+                button_box.pack_start(prev_btn, False, False, 0)
+
+                page_label = Gtk.Label()
+                page_label.get_style_context().add_class("value")
+                button_box.pack_start(page_label, False, False, 20)
+
+                next_btn = Gtk.Button.new_with_label("Next ▶")
+                next_btn.get_style_context().add_class("cc-button")
+                next_btn.connect("clicked", lambda *_: render_page(current_page[0] + 1))
+                button_box.pack_start(next_btn, False, False, 0)
+
+            close_btn = Gtk.Button.new_with_label("Close")
+            close_btn.get_style_context().add_class("cc-button")
+            close_btn.connect("clicked", lambda *_: viewer.destroy())
+            button_box.pack_start(close_btn, False, False, 20)
+
+            # Render first page
+            render_page(0)
+
+            # Gamepad navigation
+            original_handler = core._handle_gamepad_action
+            def cbz_gamepad_handler(action: str):
+                if action == "activate" or action == "axis_right":
+                    render_page(current_page[0] + 1)
+                elif action == "back":
+                    viewer.destroy()
+                elif action == "axis_left":
+                    render_page(current_page[0] - 1)
+                return False
+            core._handle_gamepad_action = cbz_gamepad_handler
+
+        except Exception as e:
+            print(f"Error loading CBZ: {e}")
+            error_label = Gtk.Label(label=f"Error loading CBZ: {e}")
+            error_label.set_line_wrap(True)
+            main_box.pack_start(error_label, True, True, 20)
+
     else:
         # Unknown file type
-        error_label = Gtk.Label(label=f"Unsupported file type: {local_path}\nSupported: PDF, JPG, PNG, GIF")
+        error_label = Gtk.Label(label=f"Unsupported file type: {local_path}\nSupported: PDF, CBZ, JPG, PNG, GIF")
         error_label.set_line_wrap(True)
         main_box.pack_start(error_label, True, True, 20)
 
     def on_destroy(*_):
         core._dialog_open = False
+        core._suspend_inactivity_timer = False
         core._handle_gamepad_action = original_handler
         # Resume inactivity timer
         core.reset_inactivity_timer()
@@ -316,6 +458,9 @@ def _open_pdf_viewer(core, file_path: str):
 
     viewer.connect("destroy", on_destroy)
     viewer.show_all()
+
+    # Reset flag after viewer is shown
+    GLib.idle_add(lambda: setattr(core, '_about_to_show_dialog', False) or False)
 
 
 def evaluate_if_condition(condition: str, rendered_ids: set[str]) -> bool:
@@ -564,18 +709,26 @@ class UICore:
 
         # Track if we have an open dialog to prevent closing on dialog focus
         self._dialog_open = False
+        # Track if we should suspend the inactivity timer (for PDF/confirm dialogs, not choice popups)
+        self._suspend_inactivity_timer = False
+        # Track if dialog allows inactivity timeout (choice popups allow it, PDF/confirm don't)
+        self._dialog_allows_timeout = False
+
+        # Track when we're about to show a dialog (set by button callbacks)
+        self._about_to_show_dialog = False
 
         def on_focus_out(_w, ev):
-            # Don't close if we have a dialog open
-            if self._dialog_open:
+            # If we're about to show a dialog, ignore this focus-out
+            if self._about_to_show_dialog:
+                # print(f"DEBUG: About to show dialog, ignoring focus-out")
                 return False
 
-            # Close window when it loses focus to another application
+            # Otherwise, close after a delay
             def check_and_close():
-                # Check if we still have focus after a brief delay
-                if not win.is_active() and not self._dialog_open:
-                    self.quit()
+                # print(f"DEBUG: Focus lost, closing")
+                self.quit()
                 return False
+
             GLib.timeout_add(100, check_and_close)
             return False
 
@@ -792,15 +945,7 @@ class UICore:
         except Exception:
             pass
 
-    # ---- SDL gamepad ----
     def start_gamepad(self):
-        """Start gamepad input handling using evdev"""
-        if EVDEV_AVAILABLE:
-            self.start_evdev_gamepad()
-        else:
-            print("Evdev not available - gamepad support disabled")
-
-    def start_evdev_gamepad(self):
         """Use evdev to read gamepad input with exclusive access (blocks EmulationStation)"""
         if not EVDEV_AVAILABLE:
             return
@@ -967,139 +1112,28 @@ class UICore:
             self.row_right()
         return False
 
-    def start_sdl(self):
-        if not SDL_AVAILABLE:
-            print("SDL not available")
-            return
-
-        def sdl_loop():
-            controllers = []
-            axis_state = {}  # Track axis states to debounce
-            axis_debounce_time = 0.3  # seconds
-            last_axis_action = {}
-
-            try:
-                if sdl2.SDL_Init(sdl2.SDL_INIT_EVENTS | sdl2.SDL_INIT_GAMECONTROLLER | sdl2.SDL_INIT_JOYSTICK) != 0:
-                    print(f"SDL_Init failed: {sdl2.SDL_GetError()}")
-                    return
-
-                # Open all available game controllers
-                num_joysticks = sdl2.SDL_NumJoysticks()
-                print(f"Found {num_joysticks} joystick(s)")
-
-                for i in range(num_joysticks):
-                    if sdl2.SDL_IsGameController(i):
-                        controller = sdl2.SDL_GameControllerOpen(i)
-                        if controller:
-                            name = sdl2.SDL_GameControllerName(controller)
-                            print(f"Opened controller {i}: {name}")
-                            controllers.append(controller)
-                        else:
-                            print(f"Failed to open controller {i}: {sdl2.SDL_GetError()}")
-                    else:
-                        print(f"Joystick {i} is not a game controller")
-
-                if not controllers:
-                    print("No game controllers opened")
-
-                running = True
-                import time
-
-                while running:
-                    ev = sdl2.SDL_Event()
-                    while sdl2.SDL_PollEvent(ev):
-                        t = ev.type
-                        if t == sdl2.SDL_QUIT:
-                            running = False
-                            break
-                        elif t == sdl2.SDL_CONTROLLERDEVICEADDED:
-                            # New controller connected
-                            idx = ev.cdevice.which
-                            if sdl2.SDL_IsGameController(idx):
-                                controller = sdl2.SDL_GameControllerOpen(idx)
-                                if controller:
-                                    controllers.append(controller)
-                        elif t == sdl2.SDL_CONTROLLERDEVICEREMOVED:
-                            # Controller disconnected
-                            instance_id = ev.cdevice.which
-                            controllers = [c for c in controllers if c and sdl2.SDL_JoystickInstanceID(sdl2.SDL_GameControllerGetJoystick(c)) != instance_id]
-                        elif t == sdl2.SDL_CONTROLLERBUTTONDOWN:
-                            b = ev.cbutton.button
-                            if b == sdl2.SDL_CONTROLLER_BUTTON_A:
-                                GLib.idle_add(self.activate_current)
-                            elif b in (sdl2.SDL_CONTROLLER_BUTTON_B, sdl2.SDL_CONTROLLER_BUTTON_START):
-                                GLib.idle_add(self.quit)
-                            elif b == sdl2.SDL_CONTROLLER_BUTTON_DPAD_UP:
-                                GLib.idle_add(self.move_focus, -1)
-                            elif b == sdl2.SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-                                GLib.idle_add(self.move_focus, +1)
-                            elif b == sdl2.SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-                                GLib.idle_add(self.row_left)
-                            elif b == sdl2.SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-                                GLib.idle_add(self.row_right)
-                        elif t == sdl2.SDL_CONTROLLERAXISMOTION:
-                            axis, val, thr = ev.caxis.axis, ev.caxis.value, 12000
-                            current_time = time.time()
-
-                            # Debounce axis motion
-                            action_key = None
-                            if axis == sdl2.SDL_CONTROLLER_AXIS_LEFTY:
-                                if val < -thr:
-                                    action_key = "axis_up"
-                                elif val > thr:
-                                    action_key = "axis_down"
-                            elif axis == sdl2.SDL_CONTROLLER_AXIS_LEFTX:
-                                if val < -thr:
-                                    action_key = "axis_left"
-                                elif val > thr:
-                                    action_key = "axis_right"
-
-                            if action_key:
-                                last_time = last_axis_action.get(action_key, 0)
-                                if current_time - last_time > axis_debounce_time:
-                                    last_axis_action[action_key] = current_time
-                                    if action_key == "axis_up":
-                                        GLib.idle_add(self.move_focus, -1)
-                                    elif action_key == "axis_down":
-                                        GLib.idle_add(self.move_focus, +1)
-                                    elif action_key == "axis_left":
-                                        GLib.idle_add(self.row_left)
-                                    elif action_key == "axis_right":
-                                        GLib.idle_add(self.row_right)
-
-                    sdl2.SDL_Delay(8)
-            except Exception as e:
-                print(f"SDL error: {e}")
-            finally:
-                # Close all controllers
-                for controller in controllers:
-                    try:
-                        if controller:
-                            sdl2.SDL_GameControllerClose(controller)
-                    except Exception:
-                        pass
-                try:
-                    sdl2.SDL_Quit()
-                except Exception:
-                    pass
-
-        threading.Thread(target=sdl_loop, daemon=True).start()
-
     # ---- Rendering helpers for new schema ----
     def reset_inactivity_timer(self):
         """Reset the inactivity timer when user interacts with the window"""
         if self._inactivity_timeout_seconds <= 0:
             return
 
+        # Don't reset timer if it's suspended (PDF viewer or confirm dialog open)
+        if self._suspend_inactivity_timer:
+            return
+
         # Cancel existing timer
         if self._inactivity_timer_id is not None:
-            GLib.source_remove(self._inactivity_timer_id)
-            # print(f"Inactivity timer reset (timeout: {self._inactivity_timeout_seconds}s)")
+            try:
+                GLib.source_remove(self._inactivity_timer_id)
+            except:
+                pass  # Timer already expired or removed
+            self._inactivity_timer_id = None
 
-        # Start new timer - only quit if no dialog is open
+        # Start new timer - quit if no dialog is open, or if dialog allows timeout
         def timeout_callback():
-            if not self._dialog_open:
-                # print("Inactivity timeout - closing window")
+            self._inactivity_timer_id = None
+            if not self._dialog_open or self._dialog_allows_timeout:
                 self.quit()
             return False
 
@@ -1121,6 +1155,14 @@ class UICore:
     def build_text(self, parent_feat, sub, row_box, align_end=False):
         lbl = Gtk.Label(label="")
         lbl.get_style_context().add_class("value")
+
+        # Apply ID as widget name for CSS
+        elem_id = (sub.attrs.get("id", "") or "").strip()
+        if elem_id:
+            # container gets background, padding, etc.
+            row_box.set_name(elem_id)
+            # label gets font, color, etc.
+            lbl.set_name(elem_id + "_label")
 
         # Get alignment from attribute (default: center)
         align_attr = (sub.attrs.get("align", "center") or "center").strip().lower()
@@ -1368,7 +1410,10 @@ class UICore:
 
         def on_click(*_):
             if file_path:
+                self._about_to_show_dialog = True
                 _open_pdf_viewer(self, file_path)
+                # Don't reset flag here - let the viewer reset it after showing
+                # self._about_to_show_dialog = False
 
         btn.connect("clicked", on_click)
 
@@ -1536,6 +1581,22 @@ class UICore:
                 if not data or data == "null":
                     return None
 
+                bg_hex = (parent_feat.attrs.get("bg", "") or sub.attrs.get("bg", "") or "#ffffff").strip()
+
+                def is_dark(hex_color: str) -> bool:
+                    hex_color = hex_color.lstrip('#')
+                    r = int(hex_color[0:2], 16) / 255.0
+                    g = int(hex_color[2:4], 16) / 255.0
+                    b = int(hex_color[4:6], 16) / 255.0
+                    def srgb_to_linear(c):
+                        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+                    R, G, B = map(srgb_to_linear, (r, g, b))
+                    luminance = 0.2126 * R + 0.7152 * G + 0.0722 * B
+                    return luminance < 0.5
+
+                dark_bg = is_dark(bg_hex)
+                fill_color = "white" if dark_bg else "black"
+
                 # Generate QR code
                 qr = qrcode.QRCode(
                     version=1,
@@ -1547,7 +1608,7 @@ class UICore:
                 qr.make(fit=True)
 
                 # Create PIL image
-                pil_img = qr.make_image(fill_color="black", back_color="white")
+                pil_img = qr.make_image(fill_color=fill_color, back_color=bg_hex)
 
                 # Convert PIL image to pixbuf
                 buffer = BytesIO()
@@ -1673,42 +1734,88 @@ def ui_build_containers(core: UICore, xml_root):
             title = (child.attrs.get("display", "") or "").strip()
             target = _get_group_container_new(core, content_box, title)
 
-            # Process all children normally - vgroups create rows
-            for sub in child.children:
-                if not should_render_element(sub, core.rendered_ids):
-                    continue
-                if sub.kind == "vgroup":
-                    vg = _build_vgroup_row(core, sub, is_header=False)
-                    if vg:
-                        target.pack_start(vg, False, False, 0)
-                elif sub.kind == "feature":
-                    fr = _build_feature_row(core, sub)
-                    if fr:
-                        target.pack_start(fr, False, False, 3)
-                elif sub.kind == "text":
-                    # Direct text element in hgroup - create a non-selectable row
-                    text_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                    text_row.set_border_width(4)
-                    core.build_text(child, sub, text_row, align_end=False)
-                    target.pack_start(text_row, False, False, 3)
-                elif sub.kind == "img":
-                    # Direct img element in hgroup - create a non-selectable row
-                    img_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                    img_row.set_border_width(4)
-                    core.build_img(child, sub, img_row, pack_end=False)
-                    target.pack_start(img_row, False, False, 3)
-                elif sub.kind == "qrcode":
-                    # Direct qrcode element in hgroup - create a non-selectable row
-                    qr_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                    qr_row.set_border_width(4)
-                    core.build_qrcode(child, sub, qr_row, pack_end=False)
-                    target.pack_start(qr_row, False, False, 3)
-                elif sub.kind == "pdf":
-                    # Direct pdf element in hgroup - create a non-selectable row
-                    pdf_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                    pdf_row.set_border_width(4)
-                    core.build_pdf(child, sub, pdf_row, pack_end=False)
-                    target.pack_start(pdf_row, False, False, 3)
+            # Process all children - create horizontal layout for mixed content
+            has_multiple_vgroups_or_hgroups = sum(1 for s in child.children if s.kind in ("vgroup", "hgroup") and should_render_element(s, core.rendered_ids)) > 1
+
+            if has_multiple_vgroups_or_hgroups:
+                # Multiple vgroups/hgroups - arrange them horizontally
+                horiz_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+                horiz_box.set_halign(Gtk.Align.CENTER)
+                # Set consistent width for horizontal layout (90% of window width)
+                horiz_box.set_size_request(int(core._window_width * 0.90), -1)
+                target.pack_start(horiz_box, False, False, 0)
+
+                for sub in child.children:
+                    if not should_render_element(sub, core.rendered_ids):
+                        continue
+                    if sub.kind == "vgroup":
+                        vg = _build_vgroup_row(core, sub, is_header=False)
+                        if vg:
+                            # Remove fixed width constraint for horizontal layout
+                            vg_box = vg.get_child()
+                            if vg_box:
+                                vg_box.set_size_request(-1, -1)
+                            horiz_box.pack_start(vg, True, True, 6)
+                    elif sub.kind == "hgroup":
+                        # Nested hgroup - create vertical container
+                        vert_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+                        for nested_sub in sub.children:
+                            if not should_render_element(nested_sub, core.rendered_ids):
+                                continue
+                            if nested_sub.kind == "vgroup":
+                                vg = _build_vgroup_row(core, nested_sub, is_header=False)
+                                if vg:
+                                    # Remove fixed width constraint for horizontal layout
+                                    vg_box = vg.get_child()
+                                    if vg_box:
+                                        vg_box.set_size_request(-1, -1)
+                                    vert_box.pack_start(vg, False, False, 0)
+                            elif nested_sub.kind == "feature":
+                                fr = _build_feature_row(core, nested_sub)
+                                if fr:
+                                    # Remove fixed width from feature rows in horizontal layout
+                                    fr_box = fr.get_child()
+                                    if fr_box:
+                                        fr_box.set_size_request(-1, -1)
+                                    vert_box.pack_start(fr, False, False, 3)
+                        horiz_box.pack_start(vert_box, True, True, 6)
+            else:
+                # Single vgroup or simple content - stack vertically as before
+                for sub in child.children:
+                    if not should_render_element(sub, core.rendered_ids):
+                        continue
+                    if sub.kind == "vgroup":
+                        vg = _build_vgroup_row(core, sub, is_header=False)
+                        if vg:
+                            target.pack_start(vg, False, False, 0)
+                    elif sub.kind == "feature":
+                        fr = _build_feature_row(core, sub)
+                        if fr:
+                            target.pack_start(fr, False, False, 3)
+                    elif sub.kind == "text":
+                        # Direct text element in hgroup - create a non-selectable row
+                        text_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                        text_row.set_border_width(4)
+                        core.build_text(child, sub, text_row, align_end=False)
+                        target.pack_start(text_row, False, False, 3)
+                    elif sub.kind == "img":
+                        # Direct img element in hgroup - create a non-selectable row
+                        img_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                        img_row.set_border_width(4)
+                        core.build_img(child, sub, img_row, pack_end=False)
+                        target.pack_start(img_row, False, False, 3)
+                    elif sub.kind == "qrcode":
+                        # Direct qrcode element in hgroup - create a non-selectable row
+                        qr_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                        qr_row.set_border_width(4)
+                        core.build_qrcode(child, sub, qr_row, pack_end=False)
+                        target.pack_start(qr_row, False, False, 3)
+                    elif sub.kind == "pdf":
+                        # Direct pdf element in hgroup - create a non-selectable row
+                        pdf_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                        pdf_row.set_border_width(4)
+                        core.build_pdf(child, sub, pdf_row, pack_end=False)
+                        target.pack_start(pdf_row, False, False, 3)
 
     # Non-header vgroups at root
     for child in xml_root.children:
@@ -1764,7 +1871,7 @@ def _get_group_container_new(core: UICore, parent_box: Gtk.Box, display_title: s
 
 def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
     row = Gtk.EventBox()
-    row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+    row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=24)
     row_box.set_halign(Gtk.Align.CENTER)  # Center the row contents
     # Set consistent width for all rows (90% of window width)
     row_box.set_size_request(int(core._window_width * 0.90), -1)
@@ -1775,28 +1882,63 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
     is_header_row = bool(is_header)
 
     cells = []
-    for child in vg.children:
-        # Check if this child should be rendered
-        if not should_render_element(child, core.rendered_ids):
-            continue
+
+    # Group consecutive text children into a single vertical cell
+    i = 0
+    children_to_process = [c for c in vg.children if should_render_element(c, core.rendered_ids)]
+
+    while i < len(children_to_process):
+        child = children_to_process[i]
 
         # Handle direct <text> children in vgroup
         if child.kind == "text":
+            # Collect consecutive text children
+            text_children = [child]
+            j = i + 1
+            while j < len(children_to_process) and children_to_process[j].kind == "text":
+                text_children.append(children_to_process[j])
+                j += 1
+
+            # Create a single cell for all consecutive text children
             cell_event = Gtk.EventBox()
             cell_event.get_style_context().add_class("vgroup-cell")
             if len(cells) == 0:
                 cell_event.get_style_context().add_class("vgroup-cell-first")
 
-            cell_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            # Use vertical box if multiple text children
+            if len(text_children) > 1:
+                cell_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+            else:
+                cell_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+
+            # Set cell_box alignment based on first text's align attribute
+            align_attr = (text_children[0].attrs.get("align", "center") or "center").strip().lower()
+            if align_attr == "left":
+                cell_box.set_halign(Gtk.Align.START)
+            elif align_attr == "right":
+                cell_box.set_halign(Gtk.Align.END)
+            else:
+                cell_box.set_halign(Gtk.Align.CENTER)
             cell_event.add(cell_box)
 
-            # Build the text element
-            core.build_text(vg, child, cell_box, align_end=False)
+            # Build all text elements
+            for text_child in text_children:
+                if len(text_children) > 1:
+                    # For vertical stacking, create a horizontal box for each text
+                    text_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                    core.build_text(vg, text_child, text_box, align_end=False)
+                    cell_box.pack_start(text_box, False, False, 0)
+                else:
+                    core.build_text(vg, text_child, cell_box, align_end=False)
 
             # Text-only cells have no controls, so they're not interactive
             cells.append((cell_event, []))
-            row_box.pack_start(cell_event, True, True, 0)
+            row_box.pack_start(cell_event, True, True, 12)
+
+            i = j  # Skip the text children we just processed
             continue
+
+        i += 1
 
         # Handle direct <img> and <qrcode> children in vgroup
         if child.kind in ("img", "qrcode"):
@@ -1816,7 +1958,7 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
 
             # Img/qrcode-only cells have no controls, so they're not interactive
             cells.append((cell_event, []))
-            row_box.pack_start(cell_event, True, True, 0)
+            row_box.pack_start(cell_event, True, True, 12)
             continue
 
         # Handle nested <vgroup> children in vgroup - treat as a cell
@@ -1834,6 +1976,17 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
             for nested_child in child.children:
                 # Check if this child should be rendered
                 if not should_render_element(nested_child, core.rendered_ids):
+                    continue
+
+                # Handle direct text/img/qrcode children in nested vgroup
+                if nested_child.kind == "text":
+                    core.build_text(child, nested_child, cell_box, align_end=False)
+                    continue
+                elif nested_child.kind == "img":
+                    core.build_img(child, nested_child, cell_box, pack_end=False)
+                    continue
+                elif nested_child.kind == "qrcode":
+                    core.build_qrcode(child, nested_child, cell_box, pack_end=False)
                     continue
 
                 if nested_child.kind == "feature":
@@ -1860,7 +2013,7 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                             core.build_pdf(nested_child, sub, cell_box, pack_end=False)
 
             cells.append((cell_event, []))
-            row_box.pack_start(cell_event, True, True, 0)
+            row_box.pack_start(cell_event, True, True, 12)
             continue
 
         # Handle nested <hgroup> children in vgroup
@@ -1923,7 +2076,9 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                             btn.set_can_focus(True)
                             feat_box.pack_start(btn, False, False, 6)
                             def on_confirm_click(_w, _core=core, _text=text, _action=action):
-                                _show_confirm_dialog(_core, _text, _action)
+                                _core._about_to_show_dialog = True
+                                _core._about_to_show_dialog = True; _show_confirm_dialog(_core, _text, _action); _core._about_to_show_dialog = False
+                                _core._about_to_show_dialog = False
                             btn.connect("clicked", on_confirm_click)
                             register_element_id(sub, core.rendered_ids)
                             cell_controls.append(btn)
@@ -1949,7 +2104,7 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                 cell_event.connect("button-press-event", on_cell_click)
 
             cells.append((cell_event, cell_controls))
-            row_box.pack_start(cell_event, True, True, 0)
+            row_box.pack_start(cell_event, True, True, 12)
             continue
 
         if child.kind != "feature":
@@ -2006,7 +2161,7 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                         btn.set_can_focus(True)
                         nested_box.pack_start(btn, False, False, 3)
                         def on_confirm_click(_w, _core=core, _text=text, _action=action):
-                            _show_confirm_dialog(_core, _text, _action)
+                            _core._about_to_show_dialog = True; _show_confirm_dialog(_core, _text, _action); _core._about_to_show_dialog = False
                         btn.connect("clicked", on_confirm_click)
                         cell_controls.append(btn)
                 cell_box.pack_start(nested_box, False, False, 3)
@@ -2028,7 +2183,7 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                 cell_box.pack_start(btn, False, False, 6)
 
                 def on_confirm_click(_w, _core=core, _text=text, _action=action):
-                    _show_confirm_dialog(_core, _text, _action)
+                    _core._about_to_show_dialog = True; _show_confirm_dialog(_core, _text, _action); _core._about_to_show_dialog = False
 
                 btn.connect("clicked", on_confirm_click)
                 cell_controls.append(btn)
@@ -2042,7 +2197,9 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
         if choices:
             feature_label = label_text or "Option"
             def open_choice(_core=core, _label=feature_label, _choices=choices):
+                _core._about_to_show_dialog = True
                 _open_choice_popup(_core, _label, _choices)
+                _core._about_to_show_dialog = False
 
             choice_btn = Gtk.Button.new_with_label("Select")
             choice_btn.get_style_context().add_class("cc-button")
@@ -2068,7 +2225,7 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
 
         # Always add cell to row (even if no controls) for display
         cells.append((cell_event, cell_controls))
-        row_box.pack_start(cell_event, True, True, 0)
+        row_box.pack_start(cell_event, True, True, 12)
 
     # Check if row has any interactive controls
     has_controls = any(controls for _, controls in cells)
@@ -2241,7 +2398,7 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
             row_box.pack_start(btn, False, False, 8)
 
             def on_confirm_click(_w):
-                _show_confirm_dialog(core, text, action)
+                core._about_to_show_dialog = True; _show_confirm_dialog(core, text, action); core._about_to_show_dialog = False
 
             btn.connect("clicked", on_confirm_click)
             row._items.append(btn)
@@ -2322,7 +2479,7 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
                     btn.set_size_request(70, -1)
                     nested_box.pack_start(btn, False, False, 3)
                     def on_confirm_click(_w, _core=core, _text=text, _action=action):
-                        _show_confirm_dialog(_core, _text, _action)
+                        _core._about_to_show_dialog = True; _show_confirm_dialog(_core, _text, _action); _core._about_to_show_dialog = False
                     btn.connect("clicked", on_confirm_click)
                     row._items.append(btn)
 
@@ -2334,7 +2491,9 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
     choices = [c for c in feat.children if c.kind == "choice"]
     if choices:
         def open_choice():
+            core._about_to_show_dialog = True
             _open_choice_popup(core, display_label, choices)
+            core._about_to_show_dialog = False
 
         choice_btn = Gtk.Button.new_with_label("Select")
         choice_btn.get_style_context().add_class("cc-button")
@@ -2386,6 +2545,7 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
 def _show_confirm_dialog(core: UICore, message: str, action: str):
     """Show a confirmation dialog before executing an action"""
     core._dialog_open = True  # Prevent main window from closing
+    core._suspend_inactivity_timer = True  # Suspend timer for confirm dialog
 
     dialog = Gtk.Dialog(transient_for=core.window, modal=True)
     dialog.set_default_size(400, 200)
@@ -2393,6 +2553,25 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
     dialog.set_resizable(False)
     dialog.set_type_hint(Gdk.WindowTypeHint.DIALOG)
     dialog.set_position(Gtk.WindowPosition.CENTER_ON_PARENT)
+
+    # Close dialog if main window is destroyed
+    def on_parent_destroy(*_):
+        try:
+            dialog.response(Gtk.ResponseType.CANCEL)
+        except:
+            pass
+    core.window.connect("destroy", on_parent_destroy)
+
+    # Close everything if dialog loses focus to external app
+    def on_dialog_focus_out(*_):
+        def check_and_close():
+            if not dialog.is_active():
+                # print(f"DEBUG: Confirm dialog lost focus, closing everything")
+                core.quit()
+            return False
+        GLib.timeout_add(100, check_and_close)
+        return False
+    dialog.connect("focus-out-event", on_dialog_focus_out)
 
     # Style the dialog window itself
     dialog.get_style_context().add_class("popup-root")
@@ -2512,6 +2691,7 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
     # Restore original handler
     core._handle_gamepad_action = original_handler
     core._dialog_open = False  # Allow main window to close again
+    core._suspend_inactivity_timer = False  # Resume timer
     # Resume inactivity timer
     core.reset_inactivity_timer()
 
@@ -2523,14 +2703,33 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
 
 def _open_choice_popup(core: UICore, feature_label: str, choices):
     """Open a popup dialog to select from available choices"""
-    core._dialog_open = True  # Prevent main window from closing
-
+    core._dialog_open = True  # Prevent main window from closing on focus loss
+    core._dialog_allows_timeout = True  # Allow inactivity timer to close window
     dialog = Gtk.Dialog(transient_for=core.window, modal=True)
     dialog.set_default_size(550, 500)
     dialog.set_decorated(False)
     dialog.set_resizable(False)
     dialog.set_type_hint(Gdk.WindowTypeHint.DIALOG)
     dialog.set_position(Gtk.WindowPosition.CENTER_ON_PARENT)
+
+    # Close dialog if main window is destroyed
+    def on_parent_destroy(*_):
+        try:
+            dialog.response(Gtk.ResponseType.CANCEL)
+        except:
+            pass
+    core.window.connect("destroy", on_parent_destroy)
+
+    # Close everything if dialog loses focus to external app
+    def on_dialog_focus_out(*_):
+        def check_and_close():
+            if not dialog.is_active():
+                # print(f"DEBUG: Choice dialog lost focus, closing everything")
+                core.quit()
+            return False
+        GLib.timeout_add(100, check_and_close)
+        return False
+    dialog.connect("focus-out-event", on_dialog_focus_out)
 
     # Style the dialog window itself
     dialog.get_style_context().add_class("popup-root")
@@ -2672,6 +2871,7 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
     # Restore original handler
     core._handle_gamepad_action = original_handler
     core._dialog_open = False  # Allow main window to close again
+    core._dialog_allows_timeout = False  # Reset flag
     # Resume inactivity timer
     core.reset_inactivity_timer()
 
