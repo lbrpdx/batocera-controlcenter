@@ -9,6 +9,7 @@
 # YOU MUST KEEP THIS HEADER AS IT IS
 import os
 import threading
+import time
 import gi
 gi.require_version('Gtk', '3.0'); gi.require_version('Gdk', '3.0')
 from gi.repository import Gtk, Gdk, GLib, Pango
@@ -44,6 +45,14 @@ def _open_pdf_viewer(core, file_path: str):
 
     core._dialog_open = True
     core._suspend_inactivity_timer = True
+
+    # Cancel any existing inactivity timer
+    if core._inactivity_timer_id is not None:
+        try:
+            GLib.source_remove(core._inactivity_timer_id)
+        except:
+            pass
+        core._inactivity_timer_id = None
 
     # Download file if it's a URL
     local_path = file_path
@@ -148,6 +157,13 @@ def _open_pdf_viewer(core, file_path: str):
     img.set_valign(Gtk.Align.CENTER)
     scrolled.add(img)
 
+    # Define close function early so it can be used by all handlers
+    def close_viewer(*_):
+        """Properly close the viewer and clean up"""
+        viewer.hide()  # Hide immediately to prevent background visibility
+        GLib.idle_add(viewer.destroy)  # Destroy in idle to ensure clean shutdown
+        return False
+
     if is_image:
         # Image handling - do this first before PDF
         try:
@@ -176,14 +192,14 @@ def _open_pdf_viewer(core, file_path: str):
 
             close_btn = Gtk.Button.new_with_label("Close")
             close_btn.get_style_context().add_class("cc-button")
-            close_btn.connect("clicked", lambda *_: viewer.destroy())
+            close_btn.connect("clicked", close_viewer)
             button_box.pack_start(close_btn, False, False, 0)
 
             # Gamepad navigation for images
             original_handler = core._handle_gamepad_action
             def img_gamepad_handler(action: str):
                 if action in ("back", "activate"):
-                    viewer.destroy()
+                    close_viewer()
                 return False
             core._handle_gamepad_action = img_gamepad_handler
 
@@ -297,7 +313,7 @@ def _open_pdf_viewer(core, file_path: str):
 
             close_btn = Gtk.Button.new_with_label("Close")
             close_btn.get_style_context().add_class("cc-button")
-            close_btn.connect("clicked", lambda *_: viewer.destroy())
+            close_btn.connect("clicked", close_viewer)
             button_box.pack_start(close_btn, False, False, 20)
 
             # Render first page
@@ -309,7 +325,7 @@ def _open_pdf_viewer(core, file_path: str):
                 if action == "activate" or action == "axis_right":
                     render_page(current_page[0] + 1)
                 elif action == "back":
-                    viewer.destroy()
+                    close_viewer()
                 elif action == "axis_left":
                     render_page(current_page[0] - 1)
                 return False
@@ -412,7 +428,7 @@ def _open_pdf_viewer(core, file_path: str):
 
             close_btn = Gtk.Button.new_with_label("Close")
             close_btn.get_style_context().add_class("cc-button")
-            close_btn.connect("clicked", lambda *_: viewer.destroy())
+            close_btn.connect("clicked", close_viewer)
             button_box.pack_start(close_btn, False, False, 20)
 
             # Render first page
@@ -424,7 +440,7 @@ def _open_pdf_viewer(core, file_path: str):
                 if action == "activate" or action == "axis_right":
                     render_page(current_page[0] + 1)
                 elif action == "back":
-                    viewer.destroy()
+                    close_viewer()
                 elif action == "axis_left":
                     render_page(current_page[0] - 1)
                 return False
@@ -489,6 +505,7 @@ def evaluate_if_condition(condition: str, rendered_ids: set[str]) -> bool:
     # Check for !id(xxx) condition (negation)
     if condition.startswith("!id(") and condition.endswith(")"):
         target_id = condition[4:-1].strip()
+        # Return True if ID is NOT registered (show element when ID doesn't exist)
         return target_id not in rendered_ids
 
     # Check for ${command} condition
@@ -512,11 +529,19 @@ def should_render_element(element, rendered_ids: set[str]) -> bool:
 
     return True
 
-def register_element_id(element, rendered_ids: set[str]):
+def register_element_id(element, rendered_ids: set[str], core=None):
     """Register an element's ID after it has been rendered with content."""
     element_id = element.attrs.get("id", "").strip()
     if element_id:
         rendered_ids.add(element_id)
+        # Trigger immediate update of conditional widgets
+        if core and hasattr(core, '_conditional_widgets'):
+            for widget, condition in core._conditional_widgets:
+                try:
+                    should_show = evaluate_if_condition(condition, rendered_ids)
+                    widget.set_visible(should_show)
+                except:
+                    pass
 
 ACTION_DEBOUNCE_MS = 100  # Faster response
 WINDOW_TITLE = "Batocera Control Center"
@@ -564,6 +589,7 @@ class UICore:
         self._inactivity_timer_id = None
         self._inactivity_timeout_seconds = 0
         self.rendered_ids: set[str] = set()  # Track IDs of rendered elements
+        self._conditional_widgets = []  # Track widgets with !id() conditions for dynamic updates
 
     # ---- Window / CSS ----
     def build_window(self):
@@ -893,8 +919,20 @@ class UICore:
         if hasattr(row, "_items") and row._items:
             item_index = getattr(row, "_item_index", 0)
             if item_index > 0:
+                # Clear highlight from old item
+                old_item = row._items[item_index]
+                old_ctx = old_item.get_style_context()
+                old_ctx.remove_class("focused-cell")
+                old_ctx.remove_class("choice-selected")
+
+                # Move to new item
                 row._item_index = item_index - 1
                 item = row._items[row._item_index]
+
+                # Highlight new item
+                ctx = item.get_style_context()
+                ctx.add_class("focused-cell")
+                ctx.add_class("choice-selected")
                 _focus_widget(item)
         else:
             cb = getattr(row, "_on_left", None)
@@ -910,8 +948,20 @@ class UICore:
         if hasattr(row, "_items") and row._items:
             item_index = getattr(row, "_item_index", 0)
             if item_index < len(row._items) - 1:
+                # Clear highlight from old item
+                old_item = row._items[item_index]
+                old_ctx = old_item.get_style_context()
+                old_ctx.remove_class("focused-cell")
+                old_ctx.remove_class("choice-selected")
+
+                # Move to new item
                 row._item_index = item_index + 1
                 item = row._items[row._item_index]
+
+                # Highlight new item
+                ctx = item.get_style_context()
+                ctx.add_class("focused-cell")
+                ctx.add_class("choice-selected")
                 _focus_widget(item)
         else:
             cb = getattr(row, "_on_right", None)
@@ -935,12 +985,27 @@ class UICore:
         for r in self.refreshers:
             r.start()
 
+        # Start periodic updates for conditional widgets
+        def update_conditional_widgets():
+            for widget, condition in self._conditional_widgets:
+                try:
+                    should_show = evaluate_if_condition(condition, self.rendered_ids)
+                    if DEBUG:
+                        print(f"DEBUG: Conditional widget check: {condition} -> {should_show}, IDs: {self.rendered_ids}")
+                    widget.set_visible(should_show)
+                except Exception as e:
+                    if DEBUG:
+                        print(f"DEBUG: Error updating conditional widget: {e}")
+            return True  # Continue calling
+
+        # Update every 500ms
+        GLib.timeout_add(500, update_conditional_widgets)
+
     def quit(self, *_a):
         # Stop gamepad thread and release devices
         self._gamepad_running = False
 
         # Give the thread a moment to exit cleanly
-        import time
         time.sleep(0.1)
 
         self._release_gamepads()
@@ -1004,7 +1069,14 @@ class UICore:
 
                 while self._gamepad_running:
                     # Use select to wait for events from any device
-                    r, w, x = select.select(self._gamepad_devices, [], [], 0.1)
+                    # Check if devices list is empty (shutdown in progress)
+                    if not self._gamepad_devices:
+                        break
+                    try:
+                        r, w, x = select.select(self._gamepad_devices, [], [], 0.1)
+                    except (OSError, ValueError):
+                        # File descriptor closed during select
+                        break
                     current_time = time.time()
 
                     for device in r:
@@ -1085,11 +1157,17 @@ class UICore:
                 print(f"Released {dev.name}")
             except Exception:
                 pass
+        # Clear the list first so select() loop sees empty list
+        devices_to_close = self._gamepad_devices[:]
+        self._gamepad_devices = []
+        # Small delay to let select() exit cleanly
+        time.sleep(0.05)
+        # Now close the devices
+        for dev in devices_to_close:
             try:
                 dev.close()
             except Exception:
                 pass
-        self._gamepad_devices = []
 
     def _handle_gamepad_action(self, action: str):
         """Handle gamepad actions - works for both main window and dialogs"""
@@ -1143,8 +1221,8 @@ class UICore:
         # Start new timer - quit if no dialog is open, or if dialog allows timeout
         def timeout_callback():
             self._inactivity_timer_id = None
-            if not self._dialog_open or self._dialog_allows_timeout:
-                self.quit()
+            # Always quit on timeout - dialogs should prevent timer from running if needed
+            self.quit()
             return False
 
         self._inactivity_timer_id = GLib.timeout_add_seconds(
@@ -1165,6 +1243,10 @@ class UICore:
     def build_text(self, parent_feat, sub, row_box, align_end=False):
         lbl = Gtk.Label(label="")
         lbl.get_style_context().add_class("value")
+        # wrap text by default
+        lbl.set_line_wrap(True)
+        lbl.set_line_wrap_mode(Pango.WrapMode.WORD)
+        lbl.set_max_width_chars(80)
 
         # Apply ID as widget name for CSS
         elem_id = (sub.attrs.get("id", "") or "").strip()
@@ -1189,6 +1271,14 @@ class UICore:
         (row_box.pack_end if align_end else row_box.pack_start)(lbl, False, False, 6)
         disp = (sub.attrs.get("display", "") or "").strip()
         refresh = float(sub.attrs.get("refresh", parent_feat.attrs.get("refresh", DEFAULT_REFRESH_SEC)))
+
+        # Handle dynamic visibility for id() and !id() conditions
+        if_condition = (sub.attrs.get("if", "") or "").strip()
+        if if_condition and (if_condition.startswith("id(") or if_condition.startswith("!id(")):
+            # Track this widget for dynamic visibility updates
+            self._conditional_widgets.append((lbl, if_condition))
+            # Initially hide, will be shown after IDs are registered
+            lbl.set_visible(False)
 
         # Check if display contains ${...} command substitution
         # Use expansion if: has ${, OR doesn't match pure ${...} format
@@ -1222,19 +1312,24 @@ class UICore:
                     return False
 
             self.refreshers.append(ExpandRefreshTask(upd_expand, refresh))
-            # Set initial value and register ID if non-empty
-            initial_value = expand_command_string(disp)
-            lbl.set_text(initial_value)
-            if initial_value.strip():
-                register_element_id(sub, self.rendered_ids)
+            # Defer initial value to idle for faster startup
+            def set_initial():
+                initial_value = expand_command_string(disp)
+                lbl.set_text(initial_value)
+                if initial_value.strip():
+                    register_element_id(sub, self.rendered_ids)
+                return False
+            GLib.idle_add(set_initial)
         elif is_cmd(disp):
             c = cmd_of(disp)
-            # Get initial value synchronously to register ID immediately
-            initial_val = run_shell_capture(c).strip()
-            lbl.set_text(initial_val)
-            # Register ID immediately if content is non-empty
-            if initial_val:
-                register_element_id(sub, self.rendered_ids)
+            # Defer initial value to idle for faster startup
+            def set_initial():
+                initial_val = run_shell_capture(c).strip()
+                lbl.set_text(initial_val)
+                if initial_val:
+                    register_element_id(sub, self.rendered_ids)
+                return False
+            GLib.idle_add(set_initial)
 
             def upd(val: str, _l=lbl, _sub=sub, _core=self):
                 _l.set_text(val)
@@ -1331,10 +1426,13 @@ class UICore:
         toggle_state = {"updating": False, "last_user_change": 0}
 
         if status_cmd:
-            # Get initial value immediately
-            initial_val = run_shell_capture(status_cmd)
-            initial_active = normalize_bool_str(initial_val)
-            tbtn.set_active(initial_active)
+            # Defer initial value to idle for faster startup
+            def set_initial():
+                initial_val = run_shell_capture(status_cmd)
+                initial_active = normalize_bool_str(initial_val)
+                tbtn.set_active(initial_active)
+                return False
+            GLib.idle_add(set_initial)
             update_toggle_label()
 
             def upd(val: str, _lbl=status_lbl, _tb=tbtn):
@@ -1384,6 +1482,35 @@ class UICore:
         register_element_id(sub, self.rendered_ids)
 
         return tbtn
+
+    def build_tab(self, parent_feat, sub, row_box, pack_end=False):
+        """Build a tab button that controls content visibility"""
+        text = (sub.attrs.get("display", "") or "Tab").strip()
+        target = (sub.attrs.get("target", "") or "").strip()
+
+        # Tab is a toggle button that looks selected when active
+        tab_btn = Gtk.ToggleButton.new_with_label(text)
+        tab_btn.get_style_context().add_class("cc-tab")
+        tab_btn.set_can_focus(True)
+
+        # Store target ID for content switching
+        tab_btn._tab_target = target
+
+        # Get alignment from attribute (default: center)
+        align_attr = (sub.attrs.get("align", "center") or "center").strip().lower()
+        if align_attr == "left":
+            tab_btn.set_halign(Gtk.Align.START)
+        elif align_attr == "right":
+            tab_btn.set_halign(Gtk.Align.END)
+        else:  # center (default)
+            tab_btn.set_halign(Gtk.Align.CENTER)
+
+        (row_box.pack_end if pack_end else row_box.pack_start)(tab_btn, False, False, 3)
+
+        # Register ID for tabs (they always produce visual content)
+        register_element_id(sub, self.rendered_ids)
+
+        return tab_btn
 
     def build_pdf(self, parent_feat, sub, row_box, pack_end=False):
         """Build a button that opens a PDF or image viewer"""
@@ -1736,61 +1863,195 @@ def ui_build_containers(core: UICore, xml_root):
     content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
     scrolled.add(content_box)
 
-    # hgroup blocks
+    # First pass: find tab rows and collect hgroup IDs
+    tab_targets = set()
     for child in xml_root.children:
-        if child.kind == "hgroup":
+        if child.kind == "feature":
+            # Check if this feature has tabs
+            has_tabs = any(sub.kind == "tab" for sub in child.children)
+            if has_tabs:
+                # Collect tab targets
+                for sub in child.children:
+                    if sub.kind == "tab":
+                        target = (sub.attrs.get("target", "") or "").strip()
+                        if target:
+                            tab_targets.add(target)
+
+    # Second pass: build ALL children in XML order (features, vgroups, hgroups)
+    tab_row = None
+    for child in xml_root.children:
+        if child.kind == "feature":
+            fr = _build_feature_row(core, child)
+            if fr:
+                content_box.pack_start(fr, False, False, 3)
+                # Check if this is a tab row
+                if hasattr(fr, '_tabs') and fr._tabs:
+                    tab_row = fr
+        elif child.kind == "vgroup":
+            role = (child.attrs.get("role", "") or "").strip().lower()
+            # Skip header and footer vgroups (they're processed separately)
+            if role in ("header", "footer"):
+                continue
             if not should_render_element(child, core.rendered_ids):
                 continue
+            vg = _build_vgroup_row(core, child, is_header=False)
+            if vg:
+                content_box.pack_start(vg, False, False, 0)
+        elif child.kind == "hgroup":
+            hgroup_id = (child.attrs.get("name", "") or child.attrs.get("display", "")).strip()
+            is_tab_content = hgroup_id in tab_targets
+
+            if not should_render_element(child, core.rendered_ids):
+                continue
+
             title = (child.attrs.get("display", "") or "").strip()
             target = _get_group_container_new(core, content_box, title)
 
-            # Process all children - create horizontal layout for mixed content
+            # If this is tab content, remove it from content_box (we'll add it back when tab is selected)
+            if is_tab_content:
+                # Get the frame (parent of target)
+                frame = target.get_parent()
+                if frame and frame.get_parent() == content_box:
+                    content_box.remove(frame)
+                    target._frame = frame  # Store frame for later re-insertion
+                    # Store content_box reference in tab_row for easy access
+                    if not hasattr(tab_row, '_content_box'):
+                        tab_row._content_box = content_box
+
+            # Process all children
             has_multiple_vgroups_or_hgroups = sum(1 for s in child.children if s.kind in ("vgroup", "hgroup") and should_render_element(s, core.rendered_ids)) > 1
 
             if has_multiple_vgroups_or_hgroups:
-                # Multiple vgroups/hgroups - arrange them horizontally
-                horiz_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-                horiz_box.set_halign(Gtk.Align.CENTER)
-                # Set consistent width for horizontal layout (90% of window width)
-                horiz_box.set_size_request(int(core._window_width * 0.90), -1)
-                target.pack_start(horiz_box, False, False, 0)
+                # For tab content, stack vgroups/hgroups vertically; otherwise arrange horizontally
+                if is_tab_content:
+                    # Vertical stacking for tab content
+                    for sub in child.children:
+                        if not should_render_element(sub, core.rendered_ids):
+                            continue
+                        if sub.kind == "vgroup":
+                            vg = _build_vgroup_row(core, sub, is_header=False)
+                            if vg:
+                                target.pack_start(vg, False, False, 0)
+                        elif sub.kind == "hgroup":
+                            # Nested hgroup in tab content - create vertical container with title
+                            vert_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
 
-                for sub in child.children:
-                    if not should_render_element(sub, core.rendered_ids):
-                        continue
-                    if sub.kind == "vgroup":
-                        vg = _build_vgroup_row(core, sub, is_header=False)
-                        if vg:
-                            # Remove fixed width constraint for horizontal layout
-                            vg_box = vg.get_child()
-                            if vg_box:
-                                vg_box.set_size_request(-1, -1)
-                            horiz_box.pack_start(vg, True, True, 6)
-                    elif sub.kind == "hgroup":
-                        # Nested hgroup - create vertical container
-                        vert_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-                        for nested_sub in sub.children:
-                            if not should_render_element(nested_sub, core.rendered_ids):
-                                continue
-                            if nested_sub.kind == "vgroup":
-                                vg = _build_vgroup_row(core, nested_sub, is_header=False)
-                                if vg:
-                                    # Remove fixed width constraint for horizontal layout
-                                    vg_box = vg.get_child()
-                                    if vg_box:
-                                        vg_box.set_size_request(-1, -1)
-                                    vert_box.pack_start(vg, False, False, 0)
-                            elif nested_sub.kind == "feature":
-                                fr = _build_feature_row(core, nested_sub)
-                                if fr:
-                                    # Remove fixed width from feature rows in horizontal layout
-                                    fr_box = fr.get_child()
-                                    if fr_box:
-                                        fr_box.set_size_request(-1, -1)
-                                    vert_box.pack_start(fr, False, False, 3)
-                        horiz_box.pack_start(vert_box, True, True, 6)
+                            # Add title if present
+                            hgroup_title = (sub.attrs.get("display", "") or sub.attrs.get("name", "")).strip()
+                            if hgroup_title:
+                                title_label = Gtk.Label(label=hgroup_title)
+                                title_label.get_style_context().add_class("group-title")
+                                title_label.set_xalign(0.0)
+                                vert_box.pack_start(title_label, False, False, 0)
+
+                            # Process nested hgroup children
+                            for nested_sub in sub.children:
+                                if not should_render_element(nested_sub, core.rendered_ids):
+                                    continue
+                                if nested_sub.kind == "text":
+                                    text_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                                    core.build_text(sub, nested_sub, text_box, align_end=False)
+                                    vert_box.pack_start(text_box, False, False, 3)
+                                elif nested_sub.kind == "img":
+                                    img_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                                    core.build_img(sub, nested_sub, img_box, pack_end=False)
+                                    vert_box.pack_start(img_box, False, False, 3)
+                                elif nested_sub.kind == "feature":
+                                    fr = _build_feature_row(core, nested_sub)
+                                    if fr:
+                                        vert_box.pack_start(fr, False, False, 3)
+
+                            target.pack_start(vert_box, False, False, 6)
+                        elif sub.kind == "img":
+                            # Direct img in tab content
+                            img_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                            img_box.set_halign(Gtk.Align.CENTER)
+                            core.build_img(child, sub, img_box, pack_end=False)
+                            target.pack_start(img_box, False, False, 6)
+                        elif sub.kind == "text":
+                            # Direct text in tab content
+                            text_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                            core.build_text(child, sub, text_box, align_end=False)
+                            target.pack_start(text_box, False, False, 6)
+                        elif sub.kind == "feature":
+                            # Direct feature in tab content
+                            fr = _build_feature_row(core, sub)
+                            if fr:
+                                target.pack_start(fr, False, False, 3)
+                else:
+                    # Horizontal arrangement for non-tab content
+                    horiz_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+                    horiz_box.set_homogeneous(True)  # Make vgroups equal width for grid alignment
+                    horiz_box.set_halign(Gtk.Align.CENTER)
+                    horiz_box.set_size_request(int(core._window_width * 0.90), -1)
+                    target.pack_start(horiz_box, False, False, 0)
+
+                    for sub in child.children:
+                        if not should_render_element(sub, core.rendered_ids):
+                            continue
+                        if sub.kind == "vgroup":
+                            vg = _build_vgroup_row(core, sub, is_header=False)
+                            if vg:
+                                vg_box = vg.get_child()
+                                if vg_box:
+                                    vg_box.set_size_request(-1, -1)
+                                horiz_box.pack_start(vg, True, True, 6)
+                        elif sub.kind == "hgroup":
+                            # Nested hgroup - create vertical container with title
+                            vert_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+
+                            # Add title if present
+                            hgroup_title = (sub.attrs.get("display", "") or sub.attrs.get("name", "")).strip()
+                            if hgroup_title:
+                                title_label = Gtk.Label(label=hgroup_title)
+                                title_label.get_style_context().add_class("group-title")
+                                title_label.set_xalign(0.0)
+                                vert_box.pack_start(title_label, False, False, 0)
+
+                            for nested_sub in sub.children:
+                                if not should_render_element(nested_sub, core.rendered_ids):
+                                    continue
+                                if nested_sub.kind == "vgroup":
+                                    vg = _build_vgroup_row(core, nested_sub, is_header=False)
+                                    if vg:
+                                        vg_box = vg.get_child()
+                                        if vg_box:
+                                            vg_box.set_size_request(-1, -1)
+                                        vert_box.pack_start(vg, False, False, 0)
+                                elif nested_sub.kind == "feature":
+                                    fr = _build_feature_row(core, nested_sub)
+                                    if fr:
+                                        fr_box = fr.get_child()
+                                        if fr_box:
+                                            fr_box.set_size_request(-1, -1)
+                                        vert_box.pack_start(fr, False, False, 3)
+                                elif nested_sub.kind == "text":
+                                    # Direct text in nested hgroup
+                                    text_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                                    core.build_text(sub, nested_sub, text_box, align_end=False)
+                                    vert_box.pack_start(text_box, False, False, 3)
+                                elif nested_sub.kind == "img":
+                                    img_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                                    core.build_img(sub, nested_sub, img_box, pack_end=False)
+                                    vert_box.pack_start(img_box, False, False, 3)
+                            horiz_box.pack_start(vert_box, True, True, 6)
+                        elif sub.kind == "img":
+                            # Direct img in hgroup horizontal layout
+                            img_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+                            img_box.set_halign(Gtk.Align.CENTER)
+                            core.build_img(child, sub, img_box, pack_end=False)
+                            horiz_box.pack_start(img_box, True, True, 6)
+                        elif sub.kind == "text":
+                            # Direct text in hgroup horizontal layout
+                            text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+                            core.build_text(child, sub, text_box, align_end=False)
+                            horiz_box.pack_start(text_box, True, True, 6)
+                        elif sub.kind == "feature":
+                            # Direct feature in hgroup horizontal layout
+                            fr = _build_feature_row(core, sub)
+                            if fr:
+                                horiz_box.pack_start(fr, True, True, 6)
             else:
-                # Single vgroup or simple content - stack vertically as before
                 for sub in child.children:
                     if not should_render_element(sub, core.rendered_ids):
                         continue
@@ -1803,48 +2064,79 @@ def ui_build_containers(core: UICore, xml_root):
                         if fr:
                             target.pack_start(fr, False, False, 3)
                     elif sub.kind == "text":
-                        # Direct text element in hgroup - create a non-selectable row
                         text_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
                         text_row.set_border_width(4)
                         core.build_text(child, sub, text_row, align_end=False)
                         target.pack_start(text_row, False, False, 3)
                     elif sub.kind == "img":
-                        # Direct img element in hgroup - create a non-selectable row
                         img_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
                         img_row.set_border_width(4)
+                        img_row.set_halign(Gtk.Align.CENTER)  # Center the row itself
                         core.build_img(child, sub, img_row, pack_end=False)
                         target.pack_start(img_row, False, False, 3)
                     elif sub.kind == "qrcode":
-                        # Direct qrcode element in hgroup - create a non-selectable row
                         qr_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
                         qr_row.set_border_width(4)
                         core.build_qrcode(child, sub, qr_row, pack_end=False)
                         target.pack_start(qr_row, False, False, 3)
                     elif sub.kind == "pdf":
-                        # Direct pdf element in hgroup - create a non-selectable row
                         pdf_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
                         pdf_row.set_border_width(4)
                         core.build_pdf(child, sub, pdf_row, pack_end=False)
                         target.pack_start(pdf_row, False, False, 3)
 
-    # Non-header vgroups at root
-    for child in xml_root.children:
-        if child.kind == "vgroup" and (child.attrs.get("role", "") or "").strip().lower() != "header":
-            if not should_render_element(child, core.rendered_ids):
-                continue
-            vg = _build_vgroup_row(core, child, is_header=False)
-            if vg:
-                content_box.pack_start(vg, False, False, 0)
-
-    # Standalone features at root
-    for child in xml_root.children:
-        if child.kind == "feature":
-            fr = _build_feature_row(core, child)
-            if fr:
-                content_box.pack_start(fr, False, False, 3)
+            # If this is tab content, store it
+            if is_tab_content and tab_row:
+                if not hasattr(tab_row, '_tab_contents'):
+                    tab_row._tab_contents = {}
+                tab_row._tab_contents[hgroup_id] = target
 
     win.connect("map", lambda *_: _init_focus(core))
     win.show_all()
+
+    # After show_all, find rows in tab content
+    if tab_row and hasattr(tab_row, '_tabs') and tab_row._tabs:
+        if hasattr(tab_row, '_tab_contents'):
+            # Find all rows that belong to each tab content
+            for content_id, content_widget in tab_row._tab_contents.items():
+                content_widget._tab_rows = []
+
+                # Find all registered rows inside this content
+                def find_rows_in_widget(widget, rows_list):
+                    if isinstance(widget, Gtk.EventBox) and widget in core.focus_rows:
+                        rows_list.append(widget)
+                    if hasattr(widget, 'get_children'):
+                        try:
+                            for child in widget.get_children():
+                                find_rows_in_widget(child, rows_list)
+                        except:
+                            pass
+
+                find_rows_in_widget(content_widget, content_widget._tab_rows)
+
+        # Activate first tab to show its content (this will handle add/remove)
+        tab_row._tabs[0].set_active(True)
+
+    # Footer vgroups at the bottom
+    footer_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+    footer_box.set_halign(Gtk.Align.CENTER)
+    for child in xml_root.children:
+        if child.kind == "vgroup" and (child.attrs.get("role", "") or "").strip().lower() == "footer":
+            if not should_render_element(child, core.rendered_ids):
+                continue
+            row = _build_vgroup_row(core, child, is_header=True)
+            if row:
+                footer_box.pack_start(row, False, False, 0)
+
+    if footer_box.get_children():
+        sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        sep.get_style_context().add_class("section-separator")
+        outer.pack_start(sep, False, False, 6)
+        outer.pack_start(footer_box, False, False, 0)
+        # Show footer widgets since they were added after win.show_all()
+        sep.show()
+        footer_box.show_all()
+
     win.present()
     return win
 
@@ -1855,8 +2147,19 @@ def _init_focus(core: UICore):
     for r in core.focus_rows:
         core._row_set_focused(r, False)
     core.focus_index = 0
-    core._row_set_focused(core.focus_rows[0], True)
-    _focus_widget(core.focus_rows[0])
+    first_row = core.focus_rows[0]
+    core._row_set_focused(first_row, True)
+    _focus_widget(first_row)
+
+    # If first row has items, highlight the first one
+    if hasattr(first_row, "_items") and first_row._items:
+        if not hasattr(first_row, "_item_index"):
+            first_row._item_index = 0
+        item = first_row._items[first_row._item_index]
+        ctx = item.get_style_context()
+        ctx.add_class("focused-cell")
+        ctx.add_class("choice-selected")
+        _focus_widget(item)
 
 
 def _get_group_container_new(core: UICore, parent_box: Gtk.Box, display_title: str):
@@ -2126,6 +2429,7 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
             cell_event.get_style_context().add_class("vgroup-cell-first")
 
         cell_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3)  # Reduced spacing
+        cell_box.set_size_request(200, -1)  # Minimum width for grid alignment
         cell_event.add(cell_box)
 
         label_text = (child.attrs.get("display", "") or child.attrs.get("name", "") or "").strip()
@@ -2162,6 +2466,10 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                         btn = core.build_button(child, hg_child, nested_box, pack_end=False)
                         btn.set_can_focus(True)
                         cell_controls.append(btn)
+                    elif hg_child.kind == "tab":
+                        tab = core.build_tab(child, hg_child, nested_box, pack_end=False)
+                        tab.set_can_focus(True)
+                        cell_controls.append(tab)
                     elif hg_child.kind == "button_confirm":
                         text = (hg_child.attrs.get("display", "") or "Confirm?").strip()
                         action = hg_child.attrs.get("action", "")
@@ -2177,12 +2485,17 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                 cell_box.pack_start(nested_box, False, False, 3)
             elif sub.kind == "pdf":
                 btn = core.build_pdf(child, sub, cell_box, pack_end=False)
-                btn.set_can_focus(True)
-                cell_controls.append(btn)
+                if btn:
+                    btn.set_can_focus(True)
+                    cell_controls.append(btn)
             elif sub.kind == "button":
                 btn = core.build_button(child, sub, cell_box, pack_end=False)
                 btn.set_can_focus(True)
                 cell_controls.append(btn)
+            elif sub.kind == "tab":
+                tab = core.build_tab(child, sub, cell_box, pack_end=False)
+                tab.set_can_focus(True)
+                cell_controls.append(tab)
             elif sub.kind == "button_confirm":
                 text = (sub.attrs.get("display", "") or "Confirm?").strip()
                 action = sub.attrs.get("action", "")
@@ -2356,24 +2669,31 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
 
 def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
     row = Gtk.EventBox()
-    row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+    row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
     row_box.set_halign(Gtk.Align.CENTER)  # Center the row contents
     # Set consistent width for all rows (90% of window width)
     row_box.set_size_request(int(core._window_width * 0.90), -1)
     row.add(row_box)
     row.set_above_child(False)
 
-    display_label = (feat.attrs.get("display", "") or feat.attrs.get("name", "") or "").strip() or " "
-    name_lbl = Gtk.Label(label=display_label)
-    name_lbl.set_xalign(0.0)
-    name_lbl.get_style_context().add_class("item-text")
-    name_lbl.set_width_chars(15)  # Fixed width for label
-    row_box.pack_start(name_lbl, False, False, 0)
+    display_label = (feat.attrs.get("display", "") or feat.attrs.get("name", "") or "").strip()
 
-    # Add spacer to push controls to the right
-    spacer = Gtk.Box()
-    spacer.set_hexpand(True)
-    row_box.pack_start(spacer, True, True, 0)
+    # Check if feature contains tabs
+    has_tabs = any(child.kind == "tab" for child in feat.children)
+
+    # Only add label and spacer if feature has a display label
+    if display_label:
+        name_lbl = Gtk.Label(label=display_label)
+        name_lbl.set_xalign(0.0)
+        name_lbl.get_style_context().add_class("item-text")
+        name_lbl.set_width_chars(15)  # Fixed width for label
+        row_box.pack_start(name_lbl, False, False, 0)
+
+        # Add spacer only for tabs to push them to the right
+        if has_tabs:
+            spacer = Gtk.Box()
+            spacer.set_hexpand(True)
+            row_box.pack_start(spacer, True, True, 0)
 
     # Build children strictly in XML order, center value between buttons
     row._items = []
@@ -2416,11 +2736,29 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
         elif kind == "text":
             lbl = Gtk.Label(label="")
             lbl.get_style_context().add_class("value")
-            lbl.set_xalign(0.5)      # center
-            lbl.set_width_chars(8)   # Fixed width for value
+            # Get alignment from attribute (default: center)
+            align_attr = (sub.attrs.get("align", "center") or "center").strip().lower()
+            if align_attr == "left":
+                lbl.set_xalign(0.0)
+                lbl.set_halign(Gtk.Align.START)
+            elif align_attr == "right":
+                lbl.set_xalign(1.0)
+                lbl.set_halign(Gtk.Align.END)
+            else:  # center (default)
+                lbl.set_xalign(0.5)
+                lbl.set_halign(Gtk.Align.CENTER)
+            lbl.set_width_chars(40)   # Fixed width for value to prevent shifting
             row_box.pack_start(lbl, False, False, 8)
             disp = (sub.attrs.get("display", "") or "").strip()
             refresh = float(sub.attrs.get("refresh", feat.attrs.get("refresh", DEFAULT_REFRESH_SEC)))
+
+            # Handle dynamic visibility for id() and !id() conditions
+            if_condition = (sub.attrs.get("if", "") or "").strip()
+            if if_condition and (if_condition.startswith("id(") or if_condition.startswith("!id(")):
+                # Track this widget for dynamic visibility updates
+                core._conditional_widgets.append((lbl, if_condition))
+                # Initially hide, will be shown after IDs are registered
+                lbl.set_visible(False)
 
             # Check if display contains ${...} command substitution
             if "${" in disp and not is_cmd(disp):
@@ -2449,13 +2787,28 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
                         return False
 
                 core.refreshers.append(ExpandRefreshTask(upd_expand, refresh))
-                lbl.set_text(expand_command_string(disp))
+                initial_val = expand_command_string(disp)
+                lbl.set_text(initial_val)
+                # Register ID if content is non-empty
+                if initial_val.strip():
+                    register_element_id(sub, core.rendered_ids)
             elif is_cmd(disp):
                 c = cmd_of(disp)
-                def upd(val: str, _l=lbl): _l.set_text(val)
+                def upd(val: str, _l=lbl, _sub=sub, _core=core):
+                    _l.set_text(val)
+                    # Register/unregister ID based on content
+                    if val.strip():
+                        register_element_id(_sub, _core.rendered_ids)
+                    else:
+                        elem_id = _sub.attrs.get("id", "").strip()
+                        if elem_id and elem_id in _core.rendered_ids:
+                            _core.rendered_ids.remove(elem_id)
                 core.refreshers.append(RefreshTask(upd, c, refresh))
             else:
                 lbl.set_text(disp)
+                # Register ID for static text if non-empty
+                if disp.strip():
+                    register_element_id(sub, core.rendered_ids)
 
         elif kind == "img":
             core.build_img(feat, sub, row_box, pack_end=False)
@@ -2465,11 +2818,12 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
 
         elif kind == "pdf":
             btn = core.build_pdf(feat, sub, row_box, pack_end=False)
-            row._items.append(btn)
+            if btn:
+                row._items.append(btn)
 
         elif kind == "hgroup":
-            # Nested hgroup in feature - create vertical layout
-            nested_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+            # Nested hgroup in feature - create horizontal layout
+            nested_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3)
             row_box.pack_start(nested_box, False, False, 8)
             for hg_child in sub.children:
                 if not should_render_element(hg_child, core.rendered_ids):
@@ -2479,6 +2833,9 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
                 elif hg_child.kind == "button":
                     btn = core.build_button(feat, hg_child, nested_box, pack_end=False)
                     row._items.append(btn)
+                elif hg_child.kind == "tab":
+                    tab = core.build_tab(feat, hg_child, nested_box, pack_end=False)
+                    row._items.append(tab)
                 elif hg_child.kind == "button_confirm":
                     text = (hg_child.attrs.get("display", "") or "Confirm?").strip()
                     action = hg_child.attrs.get("action", "")
@@ -2496,6 +2853,11 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
         elif kind == "toggle":
             tog = core.build_toggle(feat, sub, row_box, pack_end=False)
             row._items.append(tog)
+
+        elif kind == "tab":
+            tab = core.build_tab(feat, sub, row_box, pack_end=False)
+            if tab:
+                row._items.append(tab)
 
     # Choices (Select button only; current value is the <text> above)
     choices = [c for c in feat.children if c.kind == "choice"]
@@ -2519,6 +2881,76 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
 
     # Only register row if it has interactive items
     if row._items:
+        # Check if this row contains tabs - if so, set up tab switching
+        tabs = [item for item in row._items if hasattr(item, '_tab_target')]
+        if tabs:
+            # This is a tab row - set up content switching
+            row._tabs = tabs
+            row._tab_contents = {}  # Will be populated later when hgroups are processed
+            row._core = core  # Store core reference for focus management
+
+            def make_switch_handler(target_tab):
+                """Create a switch handler for a specific tab"""
+                def switch_to_tab(btn):
+                    if not btn.get_active():
+                        # User clicked an already-active tab - keep it active
+                        # Block signal to prevent recursion
+                        btn.handler_block_by_func(switch_to_tab)
+                        btn.set_active(True)
+                        btn.handler_unblock_by_func(switch_to_tab)
+                        return
+
+                    # Uncheck all other tabs (block signals to prevent recursion)
+                    for t in row._tabs:
+                        if t != target_tab:
+                            t.handler_block_by_func(t._switch_handler)
+                            t.set_active(False)
+                            t.handler_unblock_by_func(t._switch_handler)
+
+                    # Show/hide content based on target
+                    target = getattr(target_tab, '_tab_target', '')
+                    if target and hasattr(row, '_tab_contents') and hasattr(row, '_content_box'):
+                        content_box = row._content_box
+                        core = row._core  # Get core reference
+
+                        # Collect all tab content rows to remove from focus list
+                        all_tab_rows = []
+                        for content_id, content_widget in row._tab_contents.items():
+                            if hasattr(content_widget, '_tab_rows'):
+                                all_tab_rows.extend(content_widget._tab_rows)
+
+                        # Remove all tab content rows from focus_rows
+                        for r in all_tab_rows:
+                            if r in core.focus_rows:
+                                core.focus_rows.remove(r)
+                        # Remove all tab content frames
+                        for content_id, content_widget in row._tab_contents.items():
+                            if hasattr(content_widget, '_frame'):
+                                frame = content_widget._frame
+                                if frame.get_parent():
+                                    frame.get_parent().remove(frame)
+                        # Add back and show the selected content
+                        if target in row._tab_contents:
+                            content_widget = row._tab_contents[target]
+                            if hasattr(content_widget, '_frame'):
+                                # Insert frame into content_box
+                                content_box.pack_start(content_widget._frame, False, False, 0)
+                                content_widget._frame.show_all()
+                            # Add this tab's rows back to focus_rows
+                            if hasattr(content_widget, '_tab_rows'):
+                                for r in content_widget._tab_rows:
+                                    if r not in core.focus_rows:
+                                        core.focus_rows.append(r)
+                        # Reset focus index if needed
+                        if core.focus_index >= len(core.focus_rows):
+                            core.focus_index = max(0, len(core.focus_rows) - 1)
+                return switch_to_tab
+            # Connect tab buttons to switch content
+            for tab in tabs:
+                handler = make_switch_handler(tab)
+                tab._switch_handler = handler
+                tab.connect("toggled", handler)
+            # Don't activate first tab yet - will be done after content is linked
         # Left/Right selection within row
         def _set_item_focus(idx: int):
             if not row._items:
@@ -2535,7 +2967,12 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
         def on_activate():
             if not row._items:
                 return
-            _activate_widget(row._items[row._item_index])
+            item = row._items[row._item_index]
+            # For tabs, toggle them to trigger content switching
+            if hasattr(item, '_tab_target'):
+                item.set_active(True)
+            else:
+                _activate_widget(item)
 
         row._on_left = on_left
         row._on_right = on_right
@@ -2552,12 +2989,40 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
     return row
 
 
+def _hide_dialog_action_area(dialog):
+    """Completely hide and remove the dialog action area"""
+    action_area = dialog.get_action_area()
+    if action_area:
+        # Remove all children first
+        for child in action_area.get_children():
+            action_area.remove(child)
+        # Hide it completely
+        action_area.set_visible(False)
+        action_area.set_size_request(-1, 0)
+        action_area.set_no_show_all(True)
+        # Try to remove it from parent entirely
+        parent = action_area.get_parent()
+        if parent:
+            try:
+                parent.remove(action_area)
+            except:
+                pass
+    # Also make content area fill the entire dialog
+    content = dialog.get_content_area()
+    if content:
+        content.set_vexpand(True)
+        content.set_hexpand(True)
+
+
 def _show_confirm_dialog(core: UICore, message: str, action: str):
     """Show a confirmation dialog before executing an action"""
     core._dialog_open = True  # Prevent main window from closing
     core._suspend_inactivity_timer = True  # Suspend timer for confirm dialog
 
-    dialog = Gtk.Dialog(transient_for=core.window, modal=True)
+    # Use Gtk.Window instead of Gtk.Dialog to avoid action area issues
+    dialog = Gtk.Window()
+    dialog.set_transient_for(core.window)
+    dialog.set_modal(True)
     dialog.set_default_size(400, 200)
     dialog.set_decorated(False)
     dialog.set_resizable(False)
@@ -2567,7 +3032,7 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
     # Close dialog if main window is destroyed
     def on_parent_destroy(*_):
         try:
-            dialog.response(Gtk.ResponseType.CANCEL)
+            dialog.destroy()
         except:
             pass
     core.window.connect("destroy", on_parent_destroy)
@@ -2588,13 +3053,10 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
     dialog.get_style_context().add_class("popup-root")
     dialog.get_style_context().add_class("confirm-dialog")
 
-    # Add frame for inner content
+    # Add frame for inner content (no action area with Gtk.Window!)
     frame = Gtk.Frame()
     frame.set_shadow_type(Gtk.ShadowType.NONE)
-
-    content = dialog.get_content_area()
-    content.set_border_width(0)  # Remove default border
-    content.add(frame)
+    dialog.add(frame)
 
     inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
     inner.set_border_width(20)
@@ -2697,26 +3159,26 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
     current_btn[0] = 0  # Default to Cancel
     GLib.idle_add(update_button_focus)
 
-    dialog.run()
-
-    # Restore original handler
-    core._handle_gamepad_action = original_handler
-    core._dialog_open = False  # Allow main window to close again
-    core._suspend_inactivity_timer = False  # Resume timer
-    # Resume inactivity timer
-    core.reset_inactivity_timer()
-
-    try:
-        dialog.destroy()
-    except:
-        pass
+    # Connect destroy handler to clean up
+    def on_dialog_destroy(*_):
+        # Restore original handler
+        core._handle_gamepad_action = original_handler
+        core._dialog_open = False  # Allow main window to close again
+        core._suspend_inactivity_timer = False  # Resume timer
+        # Resume inactivity timer
+        core.reset_inactivity_timer()
+    dialog.connect("destroy", on_dialog_destroy)
+    dialog.show_all()
 
 
 def _open_choice_popup(core: UICore, feature_label: str, choices):
     """Open a popup dialog to select from available choices"""
     core._dialog_open = True  # Prevent main window from closing on focus loss
     core._dialog_allows_timeout = True  # Allow inactivity timer to close window
-    dialog = Gtk.Dialog(transient_for=core.window, modal=True)
+    # Use Gtk.Window instead of Gtk.Dialog to avoid action area issues
+    dialog = Gtk.Window()
+    dialog.set_transient_for(core.window)
+    dialog.set_modal(True)
     dialog.set_default_size(550, 500)
     dialog.set_decorated(False)
     dialog.set_resizable(False)
@@ -2726,7 +3188,7 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
     # Close dialog if main window is destroyed
     def on_parent_destroy(*_):
         try:
-            dialog.response(Gtk.ResponseType.CANCEL)
+            dialog.destroy()
         except:
             pass
     core.window.connect("destroy", on_parent_destroy)
@@ -2747,13 +3209,10 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
     dialog.get_style_context().add_class("popup-root")
     dialog.get_style_context().add_class("confirm-dialog")
 
-    # Add frame for inner content
+    # Add frame for inner content (no action area with Gtk.Window!)
     frame = Gtk.Frame()
     frame.set_shadow_type(Gtk.ShadowType.NONE)
-
-    content = dialog.get_content_area()
-    content.set_border_width(0)  # Remove default border
-    content.add(frame)
+    dialog.add(frame)
 
     inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
     inner.set_border_width(20)
@@ -2780,7 +3239,7 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
 
     def on_choice_selected(action: str):
         import threading
-        dialog.response(Gtk.ResponseType.OK)
+        dialog.destroy()
         if action:
             threading.Thread(target=lambda: run_shell_capture(action), daemon=True).start()
 
@@ -2804,7 +3263,7 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
             if choice_buttons:
                 choice_buttons[current_choice[0]].emit("clicked")
         elif action == "back":
-            dialog.response(Gtk.ResponseType.CANCEL)
+            dialog.destroy()
         elif action == "axis_up":
             current_choice[0] = max(0, current_choice[0] - 1)
             update_choice_focus()
@@ -2837,7 +3296,7 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
         core.reset_inactivity_timer()  # Reset timer on keyboard interaction
         key = Gdk.keyval_name(ev.keyval) or ""
         if key.lower() == "escape":
-            dialog.response(Gtk.ResponseType.CANCEL)
+            dialog.destroy()
             return True
         elif key in ("Up", "KP_Up"):
             current_choice[0] = max(0, current_choice[0] - 1)
@@ -2877,15 +3336,16 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
         import threading
         threading.Thread(target=remove_dialog_decorations, daemon=True).start()
 
-    dialog.run()
-    dialog.destroy()
-
-    # Restore original handler
-    core._handle_gamepad_action = original_handler
-    core._dialog_open = False  # Allow main window to close again
-    core._dialog_allows_timeout = False  # Reset flag
-    # Resume inactivity timer
-    core.reset_inactivity_timer()
+    # Connect destroy handler to clean up
+    def on_dialog_destroy(*_):
+        # Restore original handler
+        core._handle_gamepad_action = original_handler
+        core._dialog_open = False  # Allow main window to close again
+        core._dialog_allows_timeout = False  # Reset flag
+        # Resume inactivity timer
+        core.reset_inactivity_timer()
+    dialog.connect("destroy", on_dialog_destroy)
+    dialog.show_all()
 
 
 # ---- Application wrapper ----

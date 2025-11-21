@@ -36,7 +36,7 @@ def validate_xml(root: CCElement) -> tuple[list[str], list[str]]:
     warnings: list[str] = []
 
     # Allowed tags
-    allowed_tags = {"features", "vgroup", "hgroup", "feature", "text", "button", "button_confirm", "toggle", "choice", "img", "qrcode", "pdf"}
+    allowed_tags = {"features", "vgroup", "hgroup", "feature", "text", "button", "button_confirm", "toggle", "choice", "img", "qrcode", "pdf", "tab"}
 
     # Requirements per tag (name optional everywhere now)
     required_per_tag = {
@@ -52,6 +52,7 @@ def validate_xml(root: CCElement) -> tuple[list[str], list[str]]:
         "img": set(),         # display optional (path, URL, or ${...} command)
         "qrcode": set(),      # display optional (text, URL, or ${...} command to encode as QR)
         "pdf": {"name", "display"},  # name for button label, display for PDF/image path
+        "tab": set(),         # display optional (tab label)
     }
 
     # Known attributes by tag
@@ -69,6 +70,7 @@ def validate_xml(root: CCElement) -> tuple[list[str], list[str]]:
         "img": {"display", "width", "height", "refresh", "align"},
         "qrcode": {"display", "width", "height", "refresh", "align", "bg"},
         "pdf": {"name", "display"},
+        "tab": {"display", "align", "target"},
     }
 
     def path_str(stack):

@@ -154,6 +154,7 @@ Creates a row of cells displayed horizontally. Can be used at root level or insi
 
 **Special attribute:**
 - `role="header"`: Makes the vgroup non-selectable and displays at the top (for status bars)
+- `role="footer"`: Same as "header" but displays at the bottom
 
 #### `<feature>` - Feature Row
 A single row containing a label and controls.
@@ -252,6 +253,98 @@ Creates a "Select" button that opens a popup with multiple choices.
 - `display`: Option label in the popup
 - `action`: Shell command to execute when selected
 
+#### `<tab>` - Tab Navigation
+Creates clickable tabs that switch between different content sections. Tabs must be defined in a feature, and each tab targets an `<hgroup>` by its `name` attribute.
+
+```xml
+<!-- Define tabs -->
+<feature name="main_tabs" display="Navigation">
+  <tab display="System" target="System" />
+  <tab display="Games" target="Games" />
+  <tab display="Network" target="Network" />
+</feature>
+
+<!-- Define tab content - each hgroup is a tab panel -->
+<hgroup name="System" display="System Settings">
+  <vgroup>
+    <feature display="CPU">
+      <text display="${cat /proc/cpuinfo | grep 'model name' | head -1 | cut -d: -f2}" />
+    </feature>
+  </vgroup>
+</hgroup>
+
+<hgroup name="Games" display="Game Library">
+  <vgroup>
+    <feature display="Total Games">
+      <text display="${find /userdata/roms -name '*.zip' | wc -l}" />
+    </feature>
+  </vgroup>
+</hgroup>
+
+<hgroup name="Network" display="Network Status">
+  <vgroup>
+    <feature display="IP Address">
+      <text display="${hostname -I | awk '{print $1}'}" />
+    </feature>
+  </vgroup>
+</hgroup>
+```
+
+**Attributes:**
+- `display`: Tab label text (shown on the tab button)
+- `target`: Name of the `<hgroup>` to show when this tab is selected (must match an hgroup's `name` attribute)
+
+**Notes:**
+- Tabs are defined in a `<feature>` element, typically at the top of your XML
+- Each tab's `target` must match the `name` attribute of an `<hgroup>`
+- Only one tab's content is visible at a time
+- The first tab is selected by default
+- Tab content is stacked vertically when multiple vgroups are present
+- Tabs can be navigated with keyboard (Left/Right arrows) or gamepad (D-Pad Left/Right)
+- Clicking a tab or pressing Enter/A button activates it
+
+**Example with multiple content sections:**
+
+```xml
+<features>
+  <!-- Tab navigation -->
+  <feature name="tabs" display="Quick Access">
+    <tab display="Audio" target="audio_settings" />
+    <tab display="Video" target="video_settings" />
+    <tab display="Controls" target="control_settings" />
+  </feature>
+  
+  <!-- Audio tab content -->
+  <hgroup name="audio_settings" display="Audio Settings">
+    <vgroup>
+      <feature display="Volume">
+        <button display="Vol -" action="amixer set Master 5%-" />
+        <text display="${amixer get Master | grep -o '[0-9]*%' | head -1}" />
+        <button display="Vol +" action="amixer set Master 5%+" />
+      </feature>
+    </vgroup>
+  </hgroup>
+  
+  <!-- Video tab content -->
+  <hgroup name="video_settings" display="Video Settings">
+    <vgroup>
+      <feature display="Resolution">
+        <text display="${xrandr | grep '*' | awk '{print $1}'}" />
+      </feature>
+    </vgroup>
+  </hgroup>
+  
+  <!-- Controls tab content -->
+  <hgroup name="control_settings" display="Control Settings">
+    <vgroup>
+      <feature display="Gamepad">
+        <text display="${ls /dev/input/js* 2>/dev/null | wc -l} connected" />
+      </feature>
+    </vgroup>
+  </hgroup>
+</features>
+```
+
 #### `<img>` - Image Display
 Shows an image from a file, URL, or command output.
 
@@ -341,7 +434,7 @@ Creates a button that opens a fullscreen viewer for PDFs, images, or comic book 
 
 **Notes:**
 - Opens in fullscreen overlay window
-- PDFs are rendered at 150 DPI for good quality
+- PDFs are rendered at 100 DPI for good enough quality
 - CBZ files are extracted and images displayed in natural sort order
 - Images are automatically scaled to fit screen
 - Supports both local files and HTTP/HTTPS URLs

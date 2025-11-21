@@ -1,7 +1,7 @@
 /* Batocera Control Center - Dark Theme (GTK3 CSS) */
 
 /* Global */
-* { font-size: 16pt; }
+* { font-size: 14pt; }
 
 .popup-root {
   background-color: #0f1115;
@@ -16,15 +16,43 @@
   color: #63a4ff;
 }
 
+/* Group Title Style */
+.group-title {
+  padding: 4px 12px;          /* left indent + vertical spacing */
+  background-color: #141821;  /* background of the title label */
+  border-radius: 6px;         /* rounded corners */
+  color: #e6e9ef;
+}
+
+/* 1) Remove default GTK frame border */
+frame {
+  border: none;
+  background: none;
+  box-shadow: none;
+}
+
+/* 2) Custom frame border container (the box that follows the title) */
+frame > border {
+  border: 1px solid #546686;  /* custom border color */
+  padding: 2px 8px;           /* spacing between border and contents */
+  background-color: #141821;  /* background of the framed box */
+  border-radius: 6px;         /* optional rounded corners */
+}
+
 /* Layout helpers */
 .vgroup-row { padding: 6px 0; }
-.vgroup-cell { background-color: #141821; padding: 8px 12px; }
+.vgroup-cell {
+  background-color: #141821;
+  padding: 8px 12px;
+  min-height: 50px;  /* Consistent row height for grid alignment */
+}
+
 .vgroup-cell-first { min-width: 180px; }
-.vgroup-row .header + .value, .vgroup-row .value { min-width: 120px; }
+.vgroup-row .header + .value, .vgroup-row .value { min-width: 200px; }
 .section-separator { background-color: #232a36; min-height: 2px; }
 .group-frame {
   border: 2px solid #232a36;
-  border-radius: 16px;
+  border-radius: 10px;
   margin: 14px 0;
   padding: 16px;
   background-color: #141821;
@@ -32,10 +60,10 @@
 
 /* Base button surface: dark, no gradients */
 button {
-  border-radius: 20px;
-  padding: 12px 24px;
-  min-width: 85px;
-  border: 3px solid #232a36;
+  border-radius: 10px;
+  padding: 12px 20px;
+  min-width: 80px;
+  border: 1px solid #232a36;
   background-color: #12161f;
   background-image: none;
   color: #e6e9ef; /* fallback if no nested label */
@@ -44,7 +72,7 @@ button {
 /* Button label (GtkLabel) */
 button > label {
   color: #e6e9ef;
-  font-weight: 600;
+  font-weight: 400;
   letter-spacing: 0.2px;
 }
 
@@ -67,7 +95,7 @@ button.choice-option:hover {
 button.cc-button:hover > label,
 button.cc-choice:hover > label,
 button.choice-option:hover > label {
-  color: #f3f6fb;
+  color: #4dd0e1;
 }
 
 /* Selected/focused: dark accent (never light) */
@@ -77,10 +105,11 @@ button.cc-button:focus,
 button.cc-choice.choice-selected,
 button.choice-option.choice-selected,
 button.focused-cell {
-  background-color: #142439;   /* dark blue accent */
+  background-color: #142439;
   border-color: #4f8dff;
-  color: #ffffff;
+  color: #4dd0e1;
   background-image: none;
+  box-shadow: 0 0 4px rgba(77, 208, 225, 0.8); /* cyan halo */
 }
 button.cc-button.choice-selected > label,
 button.cc-button.focused-cell > label,
@@ -88,7 +117,7 @@ button.cc-button:focus > label,
 button.cc-choice.choice-selected > label,
 button.choice-option.choice-selected > label,
 button.focused-cell > label {
-  color: #ffffff;
+  color: #4dd0e1;
 }
 
 /* Disabled: darker and dim text */
@@ -103,16 +132,16 @@ button.choice-option:disabled {
 
 /* Toggles: dark base; checked is muted, not bright */
 button.cc-toggle {
-  background-color: #2b313c;
+  background-color: #3d1f1f;
   color: #ffffff;
-  border: 3px solid #3a4250;
-  border-radius: 20px;
-  padding: 12px 24px;
-  min-width: 100px;
+  border: 1px solid #4a2525;
+  border-radius: 10px;
+  padding: 12px 20px;
+  min-width: 80px;
   background-image: none;
 }
 button.cc-toggle:checked {
-  background-color: #1f3b2a; /* muted green */
+  background-color: #1f3b2a;
   border-color: #1a2f22;
   color: #e6e9ef;
 }
@@ -120,8 +149,55 @@ button.cc-toggle.choice-selected,
 button.cc-toggle.focused-cell,
 button.cc-toggle:focus {
   background-color: #142439;
-  border-color: #4f8dff;
+  border-color: #4dd0e1;
   color: #ffffff;
+  box-shadow: 0 0 4px rgba(77, 208, 225, 0.8); /* cyan halo */
+}
+
+/* Tabs: distinct tab-like styling, visually different from buttons */
+button.cc-tab {
+border: 2px solid #2a3240;
+  border-bottom: 2px solid #14181f;
+  border-radius: 10px 10px 0 0;  /* Rounded top corners only */
+  padding: 10px 28px;
+  min-width: 120px;
+  background-image: none;
+  color: #6a7280;
+  margin: 0 3px;
+  font-size: 14pt;
+  box-shadow: inset 0 -2px 4px rgba(0, 0, 0, 0.4);
+}
+button.cc-tab > label {
+  color: #6a7280;
+  font-weight: 500;
+}
+button.cc-tab:hover {
+  border-color: #3a4250;
+  color: #8a92a0;
+}
+button.cc-tab:hover > label {
+  color: #8a92a0;
+}
+/* Active/selected tab */
+button.cc-tab:checked {
+  border: 3px solid #5f9dff;  /* Blue border */
+  border-bottom: 3px solid #14181f;  /* Blend with content area */
+  margin-bottom: -3px;
+  padding: 11px 28px;
+  box-shadow: 0 0 6px rgba(95, 157, 255, 0.3);
+}
+button.cc-tab:checked > label {
+  color: #ffffff;
+  font-weight: 700;
+  text-shadow: none;
+}
+
+/* Only show cyan when tab is both checked (active) AND focused */
+button.cc-tab:checked.choice-selected,
+button.cc-tab:checked.focused-cell {
+  border-color: #4dd0e1;  /* Cyan border */
+  color: #4dd0e1;
+  border-bottom: 3px solid #14181f;  /* Keep bottom blended */
 }
 
 /* Choice selection (non-button contexts that get the class) */
@@ -133,11 +209,22 @@ button.cc-toggle:focus {
 
 /* Dialogs */
 .confirm-dialog {
-  border: 3px solid #4f8dff;
-  border-radius: 12px;
+  border: 1px solid #4f8dff;
+  border-radius: 10px;
   background-color: #0f1115;
+}
+
+/* Hide dialog action area (bottom bar) - try multiple selectors */
+.dialog-action-area,
+dialog .dialog-action-area,
+.confirm-dialog .dialog-action-area {
+  min-height: 0px;
+  padding: 0px;
+  margin: 0px;
+  border: none;
+  background: transparent;
+  opacity: 0;
 }
 
 /* Focused row background stays transparent; only controls highlight */
 .focused { background-color: transparent; }
-

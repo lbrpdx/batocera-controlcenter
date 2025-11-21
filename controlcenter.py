@@ -40,7 +40,17 @@ def gtk_init_check():
         return False
 
 def main():
-    signal.signal(signal.SIGINT, lambda *_: Gtk.main_quit())
+    # Will be set after app is created
+    app_instance = [None]
+
+    def signal_handler(*_):
+        if app_instance[0]:
+            app_instance[0].core.quit()
+        else:
+            Gtk.main_quit()
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     if not ensure_display():
         sys.stderr.write("ERROR: No GUI display detected. Set DISPLAY or WAYLAND_DISPLAY.\n")
@@ -124,6 +134,7 @@ def main():
         sys.exit(2)
 
     app = ControlCenterApp(xml_root, css_path, auto_close_seconds)
+    app_instance[0] = app  # Store for signal handler
     app.run()
 
 if __name__ == "__main__":
