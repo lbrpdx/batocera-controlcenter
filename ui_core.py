@@ -209,83 +209,76 @@ def _open_pdf_viewer(core, file_path: str):
             main_box.pack_start(error_label, True, True, 20)
 
     elif is_pdf:
-        # PDF handling with pdftoppm
+        # PDF handling with pdftoppm (now written in memory, not /tmp)
         try:
+            from gi.repository import Gio
+
             # Get page count
             result = subprocess.run(['pdfinfo', local_path], capture_output=True, text=True)
             page_count = 1
             for line in result.stdout.split('\n'):
                 if line.startswith('Pages:'):
-                    page_count = int(line.split(':')[1].strip())
+                    try:
+                        page_count = int(line.split(':')[1].strip())
+                    except:
+                        pass
                     break
 
             current_page = [1]  # PDF pages are 1-indexed
-            temp_dir = tempfile.mkdtemp()
-            temp_files.append(temp_dir)
 
             def render_page(page_num):
                 if 1 <= page_num <= page_count:
                     try:
-                        # Convert PDF page to JPEG using pdftoppm
-                        output_prefix = os.path.join(temp_dir, 'page')
-                        result = subprocess.run([
+                        # Render directly to memory (stdout)
+                        cmd = [
                             'pdftoppm',
                             '-jpeg',
-                            '-r', '150',  # 150 DPI quality
+                            '-r', '120',  # 120 DPI quality is good enough
                             '-f', str(page_num),  # First page
                             '-l', str(page_num),  # Last page
-                            local_path,
-                            output_prefix
-                        ], capture_output=True, text=True)
-
-                        if result.returncode != 0:
-                            print(f"pdftoppm error: {result.stderr}")
-
-                        # pdftoppm creates files with format: prefix-N.jpg where N is zero-padded
-                        # For single page, it might be page-1.jpg or page-01.jpg depending on total pages
-                        # Try different formats
-                        possible_files = [
-                            f"{output_prefix}-{page_num}.jpg",
-                            f"{output_prefix}-{page_num:02d}.jpg",
-                            f"{output_prefix}-{page_num:03d}.jpg",
+                            local_path
                         ]
 
-                        image_file = None
-                        for pf in possible_files:
-                            if os.path.exists(pf):
-                                image_file = pf
-                                break
+                        # Run the command and capture binary output
+                        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-                        if image_file and os.path.exists(image_file):
-                            # Load and scale image
-                            pixbuf = GdkPixbuf.Pixbuf.new_from_file(image_file)
+                        if proc.returncode != 0:
+                            print(f"pdftoppm error: {proc.stderr.decode('utf-8', errors='ignore')}")
+                            return
 
-                            # Scale to fit screen
-                            screen_width = core.window.get_screen().get_width()
-                            screen_height = core.window.get_screen().get_height() - 100  # Leave room for buttons
+                        img_data = proc.stdout
 
-                            orig_width = pixbuf.get_width()
-                            orig_height = pixbuf.get_height()
+                        if not img_data or len(img_data) < 50:
+                            print(f"Error: No data received for page {page_num}")
+                            return
 
-                            scale = min(screen_width / orig_width, screen_height / orig_height, 1.0)
-                            if scale < 1.0:
-                                new_width = int(orig_width * scale)
-                                new_height = int(orig_height * scale)
-                                pixbuf = pixbuf.scale_simple(new_width, new_height, GdkPixbuf.InterpType.BILINEAR)
+                        # Create Pixbuf directly from the memory buffer
+                        stream = Gio.MemoryInputStream.new_from_data(img_data, None)
+                        pixbuf = GdkPixbuf.Pixbuf.new_from_stream(stream, None)
+                        stream.close()
 
-                            img.set_from_pixbuf(pixbuf)
-                            current_page[0] = page_num
+                        # Scale to fit screen
+                        screen_width = core.window.get_screen().get_width()
+                        screen_height = core.window.get_screen().get_height() - 100  # Leave room for buttons
 
-                            # Update button sensitivity (only if multi-page)
-                            if page_count > 1:
-                                prev_btn.set_sensitive(page_num > 1)
-                                next_btn.set_sensitive(page_num < page_count)
-                                page_label.set_text(f"Page {page_num} / {page_count}")
+                        orig_width = pixbuf.get_width()
+                        orig_height = pixbuf.get_height()
 
-                            # Clean up old temp image
-                            temp_files.append(image_file)
-                        else:
-                            print(f"Error: Generated image not found: {image_file}")
+                        scale = min(screen_width / orig_width, screen_height / orig_height, 1.0)
+                        if scale < 1.0:
+                            new_width = int(orig_width * scale)
+                            new_height = int(orig_height * scale)
+                            pixbuf = pixbuf.scale_simple(new_width, new_height, GdkPixbuf.InterpType.BILINEAR)
+
+                        img.set_from_pixbuf(pixbuf)
+                        current_page[0] = page_num
+
+                        # Update button sensitivity (only if multi-page)
+                        if page_count > 1:
+                            prev_btn.set_sensitive(page_num > 1)
+                            next_btn.set_sensitive(page_num < page_count)
+                            page_label.set_text(f"Page {page_num} / {page_count}")
+
                     except Exception as e:
                         print(f"Error rendering page {page_num}: {e}")
 
@@ -333,7 +326,6 @@ def _open_pdf_viewer(core, file_path: str):
 
         except Exception as e:
             print(f"Error loading PDF: {e}")
-            # Fall back to showing error
             error_label = Gtk.Label(label=f"Error loading PDF: {e}\nMake sure pdftoppm and pdfinfo are installed.")
             error_label.set_line_wrap(True)
             main_box.pack_start(error_label, True, True, 20)
@@ -342,26 +334,18 @@ def _open_pdf_viewer(core, file_path: str):
         # CBZ handling (Comic Book Archive - ZIP file with images)
         try:
             import zipfile
+            from gi.repository import Gio
+            import re
 
-            # Extract CBZ to temp directory
-            temp_dir = tempfile.mkdtemp()
-            temp_files.append(temp_dir)
+            # No write on /tmp we keep the zipfile object open for the duration of the viewer
+            cbz_file = zipfile.ZipFile(local_path, 'r')
 
-            # Extract all files
-            with zipfile.ZipFile(local_path, 'r') as zip_ref:
-                zip_ref.extractall(temp_dir)
-
-            # Find all image files in the extracted directory
+            # Find all image files inside the zip
             image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
-            image_files = []
-
-            for root, dirs, files in os.walk(temp_dir):
-                for file in files:
-                    if file.lower().endswith(image_extensions):
-                        image_files.append(os.path.join(root, file))
+            all_files = cbz_file.namelist()
+            image_files = [f for f in all_files if f.lower().endswith(image_extensions)]
 
             # Sort images naturally (by filename)
-            import re
             def natural_sort_key(s):
                 return [int(text) if text.isdigit() else text.lower()
                         for text in re.split('([0-9]+)', s)]
@@ -376,13 +360,22 @@ def _open_pdf_viewer(core, file_path: str):
             def render_page(page_num):
                 if 0 <= page_num < page_count:
                     try:
-                        image_file = image_files[page_num]
-                        pixbuf = GdkPixbuf.Pixbuf.new_from_file(image_file)
+                        # 1. Read the specific file from ZIP into RAM
+                        file_name = image_files[page_num]
+                        img_data = cbz_file.read(file_name)
+
+                        # 2. Create a Gio Memory Input Stream
+                        stream = Gio.MemoryInputStream.new_from_data(img_data, None)
+
+                        # 3. Create Pixbuf directly from stream
+                        pixbuf = GdkPixbuf.Pixbuf.new_from_stream(stream, None)
+
+                        # 4. Close the stream (data is in pixbuf now)
+                        stream.close()
 
                         # Scale to fit screen
                         screen_width = core.window.get_screen().get_width()
                         screen_height = core.window.get_screen().get_height() - 100
-
                         orig_width = pixbuf.get_width()
                         orig_height = pixbuf.get_height()
 
@@ -445,6 +438,15 @@ def _open_pdf_viewer(core, file_path: str):
                     render_page(current_page[0] - 1)
                 return False
             core._handle_gamepad_action = cbz_gamepad_handler
+
+            # Close zipFile when the window is destoyed
+            def clean_up_zip(*_):
+                try:
+                    cbz_file.close()
+                except:
+                    pass
+
+            viewer.connect("destroy", clean_up_zip)
 
         except Exception as e:
             print(f"Error loading CBZ: {e}")
