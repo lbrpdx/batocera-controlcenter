@@ -582,6 +582,7 @@ class UICore:
         self._inactivity_timeout_seconds = 0
         self.rendered_ids: set[str] = set()  # Track IDs of rendered elements
         self._conditional_widgets = []  # Track widgets with !id() conditions for dynamic updates
+        self.quit_mode = "hide" # versus close
 
     # ---- Window / CSS ----
     def build_window(self):
@@ -973,6 +974,26 @@ class UICore:
         if callable(cb):
             cb()
 
+    def hide(self, *_a):
+        self.window.hide()
+        self._gamepads.stopThread()
+        self.stop_refresh()
+
+    def show(self, *_a):
+        self.window.present()
+        self.start_refresh()
+        self.start_gamepad()
+
+    def toogle_visibility(self, *_a):
+        if self.window.is_visible():
+            self.hide()
+        else:
+            self.show()
+
+    def stop_refresh(self):
+        for r in self.refreshers:
+            r.stop()
+
     def start_refresh(self):
         for r in self.refreshers:
             r.start()
@@ -994,44 +1015,29 @@ class UICore:
         GLib.timeout_add(500, update_conditional_widgets)
 
     def quit(self, *_a):
-        # Stop gamepad thread and release devices
-        self._gamepads.stop_listen()
+        if self.quit_mode == "hide":
+            self.hide()
 
-        # Give the thread a moment to exit cleanly
-        time.sleep(0.1)
+        if self.quit_mode == "close":
+            try:
+                if self.window:
+                    self.window.destroy()
+            except Exception:
+                pass
 
-        self._gamepads.close_devices()
+            # close pads (after window is close to not wait)
+            self._gamepads.stopThread()
 
-        try:
-            if self.window:
-                self.window.destroy()
-        except Exception:
-            pass
-        try:
-            Gtk.main_quit()
-        except Exception:
-            pass
+            try:
+                Gtk.main_quit()
+            except Exception:
+                pass
 
     def start_gamepad(self):
         """Use evdev to read gamepad input with exclusive access (blocks EmulationStation)"""
         if not EVDEV_AVAILABLE:
             return
-
-        def evdev_loop():
-            try:
-                self._gamepads.open_devices()
-                if self._gamepads.nb_devices() == 0:
-                    print("No gamepad devices found via evdev")
-                    return
-                self._gamepads.listen(self._handle_gamepad_action)
-            except Exception as e:
-                print(f"Evdev gamepad error: {e}")
-            finally:
-                self._gamepads.close_devices()
-
-        # Store the thread so we can track it
-        gamepad_thread = threading.Thread(target=evdev_loop, daemon=True)
-        gamepad_thread.start()
+        self._gamepads.startThread(self._handle_gamepad_action)
 
     def _handle_gamepad_action(self, action: str):
         """Handle gamepad actions - works for both main window and dialogs"""
@@ -1160,9 +1166,16 @@ class UICore:
                     self.update_fn = update_fn
                     self.interval_ms = max(250, int(interval_sec * 1000))
                     self._timer_id = None
+                    self._active = False
 
                 def start(self):
+                    if self._active:
+                        return
+                    self._active = True
                     self._schedule_tick(immediate=True)
+
+                def stop(self):
+                    self._active = False
 
                 def _schedule_tick(self, immediate=False):
                     delay = 10 if immediate else self.interval_ms
@@ -1172,7 +1185,8 @@ class UICore:
                     def work():
                         GLib.idle_add(self.update_fn)
                     threading.Thread(target=work, daemon=True).start()
-                    self._schedule_tick(immediate=False)
+                    if self._active:
+                        self._schedule_tick(immediate=False)
                     return False
 
             self.refreshers.append(ExpandRefreshTask(upd_expand, refresh))
@@ -2635,9 +2649,16 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
                         self.update_fn = update_fn
                         self.interval_ms = max(250, int(interval_sec * 1000))
                         self._timer_id = None
+                        self._active = False
 
                     def start(self):
+                        if self._active:
+                            return
+                        self._active = True
                         self._schedule_tick(immediate=True)
+
+                    def stop(self):
+                        self._active = False
 
                     def _schedule_tick(self, immediate=False):
                         delay = 1 if immediate else self.interval_ms
@@ -2647,7 +2668,8 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
                         def work():
                             GLib.idle_add(self.update_fn)
                         threading.Thread(target=work, daemon=True).start()
-                        self._schedule_tick(immediate=False)
+                        if self._active:
+                            self._schedule_tick(immediate=False)
                         return False
 
                 core.refreshers.append(ExpandRefreshTask(upd_expand, refresh))
@@ -3034,7 +3056,6 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
     dialog.connect("destroy", on_dialog_destroy)
     dialog.show_all()
 
-
 def _open_choice_popup(core: UICore, feature_label: str, choices):
     """Open a popup dialog to select from available choices"""
     core._dialog_open = True  # Prevent main window from closing on focus loss
@@ -3210,7 +3231,6 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
         core.reset_inactivity_timer()
     dialog.connect("destroy", on_dialog_destroy)
     dialog.show_all()
-
 
 # ---- Application wrapper ----
 class ControlCenterApp:

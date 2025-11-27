@@ -20,12 +20,14 @@ from evdev import InputDevice, ecodes
 import re
 from pathlib import Path
 import xml.etree.ElementTree as ET
+import threading
 
 from gi.repository import GLib
 
 class GamePads:
     def __init__(self):
         self._gamepad_devices = []
+        self.gamepad_thread = None
 
     def nb_devices(self):
         return len(self._gamepad_devices)
@@ -64,23 +66,39 @@ class GamePads:
         for dev in self._gamepad_devices:
             try:
                 dev.ungrab()
+                dev.close()
                 print(f"Released {dev.name}")
             except Exception:
                 pass
-        # Clear the list first so select() loop sees empty list
-        devices_to_close = self._gamepad_devices[:]
         self._gamepad_devices = []
-        # Small delay to let select() exit cleanly
-        time.sleep(0.05)
-        # Now close the devices
-        for dev in devices_to_close:
-            try:
-                dev.close()
-            except Exception:
-                pass
 
     def stop_listen(self):
         self._gamepad_running = False
+
+    def startThread(self, handle_gamepad_action):
+        def evdev_loop():
+            print("begin thread: evdev")
+            try:
+                self.open_devices()
+                if self.nb_devices() == 0:
+                    print("No gamepad devices found via evdev")
+                    return
+                self.listen(handle_gamepad_action)
+            except Exception as e:
+                print(f"Evdev gamepad error: {e}")
+            finally:
+                self.close_devices()
+            print("end thread: evdev")
+
+        # Store the thread so we can track it
+        self.gamepad_thread = threading.Thread(target=evdev_loop, daemon=True)
+        self.gamepad_thread.start()
+
+    def stopThread(self):
+        self.stop_listen()
+        if self.gamepad_thread is not None:
+            self.gamepad_thread.join()
+            self.gamepad_thread = None
 
     def get_mapping_axis_relaxed_values(self, device):
         """

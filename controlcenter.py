@@ -46,11 +46,18 @@ def main():
     def signal_handler(*_):
         if app_instance[0]:
             app_instance[0].core.quit()
+            exit(0)
         else:
             Gtk.main_quit()
 
+    # show/hide the main window
+    def signal_handler_usr1(*_):
+        if app_instance[0]:
+            app_instance[0].core.toogle_visibility()
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGUSR1, signal_handler_usr1)
 
     if not ensure_display():
         sys.stderr.write("ERROR: No GUI display detected. Set DISPLAY or WAYLAND_DISPLAY.\n")

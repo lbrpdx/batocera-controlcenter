@@ -19,9 +19,16 @@ class RefreshTask:
         self.cmd = cmd
         self.interval_ms = max(250, int(interval_sec * 1000))
         self._timer_id = None
+        self._active = False
 
     def start(self):
+        if self._active:
+            return
+        self._active = True
         self._schedule_tick(immediate=True)
+
+    def stop(self):
+        self._active = False
 
     def _schedule_tick(self, immediate=False):
         delay = 1 if immediate else self.interval_ms
@@ -32,7 +39,8 @@ class RefreshTask:
             result = run_shell_capture(self.cmd)
             GLib.idle_add(self.widget_update_fn, result)
         threading.Thread(target=work, daemon=True).start()
-        self._schedule_tick(immediate=False)
+        if self._active:
+            self._schedule_tick(immediate=False)
         return False
 
 class Debouncer:
