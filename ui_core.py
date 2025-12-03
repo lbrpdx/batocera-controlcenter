@@ -980,9 +980,10 @@ class UICore:
         self.stop_refresh()
 
     def show(self, *_a):
-        self.window.present()
-        self.start_refresh()
         self.start_gamepad()
+        self.window.present()
+        self.reset_inactivity_timer()  # Reset timer on button click
+        self.start_refresh()
 
     def toogle_visibility(self, *_a):
         if self.window.is_visible():
@@ -1038,6 +1039,13 @@ class UICore:
         if not EVDEV_AVAILABLE:
             return
         self._gamepads.startThread(self._handle_gamepad_action)
+
+        # give time to the user to release the hotkeys...
+        n = 30
+        while self._gamepads.can_get_input_focus() is False and n > 0:
+            print("please release hotkeys...")
+            time.sleep(0.1)
+            n = n-1
 
     def _handle_gamepad_action(self, action: str):
         """Handle gamepad actions - works for both main window and dialogs"""

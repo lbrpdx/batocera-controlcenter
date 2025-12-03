@@ -27,7 +27,8 @@ from gi.repository import GLib
 class GamePads:
     def __init__(self):
         self._gamepad_devices = []
-        self.gamepad_thread = None
+        self._gamepad_thread = None
+        self._can_get_input_focus = False
 
     def nb_devices(self):
         return len(self._gamepad_devices)
@@ -49,17 +50,18 @@ class GamePads:
                     if isJoystick:
                         device = InputDevice(event.device_node)
                         print(f"Found gamepad: {device.name} at {event.device_node}")
-                        # Grab exclusive access to prevent EmulationStation from receiving events
-                        try:
-                            device.grab()
-                            print(f"Grabbed exclusive access to {device.name}")
-                        except Exception as e:
-                            print(f"Could not grab {device.name}: {e}")
-
-                        #
                         self._gamepad_devices.append(device)
             except Exception as e:
                 print(f"Error checking device {event}: {e}")
+
+    def _grab_devices(self):
+        for device in self._gamepad_devices:
+            # Grab exclusive access to prevent EmulationStation from receiving events
+            try:
+                device.grab()
+                print(f"Grabbed exclusive access to {device.name}")
+            except Exception as e:
+                print(f"Could not grab {device.name}: {e}")
 
     def close_devices(self):
         """Release exclusive access to gamepad devices"""
@@ -74,6 +76,9 @@ class GamePads:
 
     def stop_listen(self):
         self._gamepad_running = False
+
+    def can_get_input_focus(self):
+        return self._can_get_input_focus
 
     def startThread(self, handle_gamepad_action):
         def evdev_loop():
@@ -91,14 +96,14 @@ class GamePads:
             print("end thread: evdev")
 
         # Store the thread so we can track it
-        self.gamepad_thread = threading.Thread(target=evdev_loop, daemon=True)
-        self.gamepad_thread.start()
+        self._gamepad_thread = threading.Thread(target=evdev_loop, daemon=True)
+        self._gamepad_thread.start()
 
     def stopThread(self):
         self.stop_listen()
-        if self.gamepad_thread is not None:
-            self.gamepad_thread.join()
-            self.gamepad_thread = None
+        if self._gamepad_thread is not None:
+            self._gamepad_thread.join()
+            self._gamepad_thread = None
 
     def get_mapping_axis_relaxed_values(self, device):
         """
@@ -280,6 +285,23 @@ class GamePads:
                     axis_infos[dev.fd][code] =  { "bornemin": bornemin, "bornemax": bornemax }
                     axis_states[dev.fd][code] = abs_info.value # relaxed
 
+        # compute initial hotkeys pressed status
+        # self._can_get_input_focus will be set to true only once hotkeys are released
+        active_hotkeys = {}
+        for dev in self._gamepad_devices:
+            active_keys = dev.active_keys()
+            for key in active_keys:
+                if "button" in mappings[dev.fd] and key in mappings[dev.fd]["button"] and 1 in mappings[dev.fd]["button"][key]:
+                    if mappings[dev.fd]["button"][key][1] == "hotkey":
+                        if dev.fd not in active_hotkeys:
+                            active_hotkeys[dev.fd] = {}
+                        active_hotkeys[dev.fd][key] = []
+
+        # focus require that hotkeys down are received by underlaying apply
+        # to not cause issue (retroarch for example think that hotkey remains down, then right alone forwards)
+        self._can_get_input_focus = len(active_hotkeys) == 0
+        if self._can_get_input_focus:
+            self._grab_devices()
         self._gamepad_running = True
 
         while self._gamepad_running:
@@ -296,7 +318,20 @@ class GamePads:
             for device in r:
                 try:
                     for event in device.read():
-                        self._handle_event(device, event, mappings[device.fd], axis_infos[device.fd], axis_states, actions, f_handle_gamepad_action)
+                        if self._can_get_input_focus:
+                            self._handle_event(device, event, mappings[device.fd], axis_infos[device.fd], axis_states, actions, f_handle_gamepad_action)
+                        else:
+                            # grrr, still some hotkeys to release
+                            if event.type == ecodes.EV_KEY and event.value == 0: # Button down
+                                if device.fd in active_hotkeys and event.code in active_hotkeys[device.fd]:
+                                    del active_hotkeys[device.fd][event.code]
+                                    if len(active_hotkeys[device.fd]) == 0:
+                                        del active_hotkeys[device.fd]
+                                        if len(active_hotkeys) == 0: # maybe no more hotkeys ?
+                                            self._can_get_input_focus = True
+                                            print("hotkeys released !")
+                                            self._grab_devices() # finally grab devices
+
                 except Exception as e:
                     print(f"Error reading event: {e}")
 
