@@ -87,6 +87,7 @@ class GamePads:
                 self.open_devices()
                 if self.nb_devices() == 0:
                     print("No gamepad devices found via evdev")
+                    self._can_get_input_focus = True
                     return
                 self.listen(handle_gamepad_action)
             except Exception as e:
