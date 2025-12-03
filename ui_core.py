@@ -3242,11 +3242,13 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
 
 # ---- Application wrapper ----
 class ControlCenterApp:
-    def __init__(self, xml_root, css_path: str, auto_close_seconds: int = 0):
+    def __init__(self, xml_root, css_path: str, auto_close_seconds: int = 0, hidden_at_startup = False):
         self.core = UICore(css_path)
         self.auto_close_seconds = auto_close_seconds
         self.core._inactivity_timeout_seconds = auto_close_seconds
         self.window = ui_build_containers(self.core, xml_root)
+        if hidden_at_startup:
+            self.window.hide()
 
     def run(self):
         self.core.start_refresh()

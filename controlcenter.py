@@ -94,10 +94,14 @@ def main():
     xml_path = None
     css_path = None
     auto_close_seconds = 0  # 0 = never auto-close
+    hidden_at_startup = False
 
     # Parse command line arguments - any numeric argument is the timeout
     for arg in sys.argv[1:]:
         if arg in ("-h", "--help"):
+            continue
+        if arg == "--hidden":
+            hidden_at_startup = True
             continue
         # Check if it's a number (timeout)
         try:
@@ -140,7 +144,7 @@ def main():
             sys.stderr.write(f" - {e}\n")
         sys.exit(2)
 
-    app = ControlCenterApp(xml_root, css_path, auto_close_seconds)
+    app = ControlCenterApp(xml_root, css_path, auto_close_seconds, hidden_at_startup)
     app_instance[0] = app  # Store for signal handler
     app.run()
 
