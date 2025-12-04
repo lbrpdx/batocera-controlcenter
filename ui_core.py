@@ -1034,11 +1034,14 @@ class UICore:
             except Exception:
                 pass
 
+    def _handle_gamepad_action_call(self, action: str):
+        self._handle_gamepad_action(action)
+
     def start_gamepad(self):
         """Use evdev to read gamepad input with exclusive access (blocks EmulationStation)"""
         if not EVDEV_AVAILABLE:
             return
-        self._gamepads.startThread(self._handle_gamepad_action)
+        self._gamepads.startThread(self._handle_gamepad_action_call)
 
         # give time to the user to release the hotkeys...
         n = 30
