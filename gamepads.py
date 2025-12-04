@@ -97,6 +97,7 @@ class GamePads:
             print("end thread: evdev")
 
         # Store the thread so we can track it
+        self._can_get_input_focus = False # not allowed until keys are checked
         self._gamepad_thread = threading.Thread(target=evdev_loop, daemon=True)
         self._gamepad_thread.start()
 

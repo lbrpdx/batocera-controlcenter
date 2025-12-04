@@ -3246,13 +3246,16 @@ class ControlCenterApp:
         self.core = UICore(css_path)
         self.auto_close_seconds = auto_close_seconds
         self.core._inactivity_timeout_seconds = auto_close_seconds
+        self.hidden_at_startup = hidden_at_startup
         self.window = ui_build_containers(self.core, xml_root)
         if hidden_at_startup:
             self.window.hide()
 
     def run(self):
         self.core.start_refresh()
-        self.core.start_gamepad()
+
+        if not self.hidden_at_startup:
+            self.core.start_gamepad()
 
         # Set up inactivity timer if specified (resets on user interaction)
         if self.auto_close_seconds > 0:
