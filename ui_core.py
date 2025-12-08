@@ -444,6 +444,32 @@ class UICore:
         if callable(cb):
             cb()
 
+    def get_index_active_tab(self):
+        for i, t in enumerate(self.window._tab_row._tabs):
+            if t.get_active():
+                return i
+        return None
+
+    def set_next_tab(self):
+        i = self.get_index_active_tab()
+        if i is not None:
+            i = i+1
+            while i < len(self.window._tab_row._tabs):
+                if self.window._tab_row._tabs[i].is_visible():
+                    self.window._tab_row._tabs[i].set_active(True)
+                    return
+                i = i+1
+
+    def set_previous_tab(self):
+        i = self.get_index_active_tab()
+        if i is not None:
+            i = i-1
+            while i >= 0:
+                if self.window._tab_row._tabs[i].is_visible():
+                    self.window._tab_row._tabs[i].set_active(True)
+                    return
+                i = i-1
+
     def row_left(self):
         row = self.focus_rows[self.focus_index] if self.focus_rows else None
         if not row:
@@ -545,12 +571,22 @@ class UICore:
         self.window.present()
         self.reset_inactivity_timer()  # Reset timer on button click
         self.start_refresh()
+        self.set_tab_focus()
 
     def toogle_visibility(self, *_a):
         if self.window.is_visible():
             self.hide()
         else:
             self.show()
+
+    def set_tab_focus(self):
+        if len(self.window._tab_row._tabs) == 0:
+            return
+        n = 0
+        while self.window._tab_row._tabs[n].is_visible() == False and n < len(self.window._tab_row._tabs):
+            n = n+1
+        if n < len(self.window._tab_row._tabs):
+            self.window._tab_row._tabs[n].set_active(True)
 
     def stop_refresh(self):
         for r in self.refreshers:
@@ -634,6 +670,10 @@ class UICore:
             self.row_left()
         elif action == "axis_right":
             self.row_right()
+        elif action == "next_tab":
+            self.set_next_tab()
+        elif action == "previous_tab":
+            self.set_previous_tab()
         return False
 
     # ---- Rendering helpers for new schema ----
@@ -1574,8 +1614,7 @@ def ui_build_containers(core: UICore, xml_root):
 
                 find_rows_in_widget(content_widget, content_widget._tab_rows)
 
-        # Activate first tab to show its content (this will handle add/remove)
-        tab_row._tabs[0].set_active(True)
+    win._tab_row = tab_row
 
     # Footer vgroups at the bottom
     footer_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
@@ -1595,7 +1634,6 @@ def ui_build_containers(core: UICore, xml_root):
         sep.show()
         footer_box.show_all()
 
-    win.present()
     return win
 
 
@@ -2430,7 +2468,6 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
 
     return row
 
-
 def _hide_dialog_action_area(dialog):
     """Completely hide and remove the dialog action area"""
     action_area = dialog.get_action_area()
@@ -2454,7 +2491,6 @@ def _hide_dialog_action_area(dialog):
     if content:
         content.set_vexpand(True)
         content.set_hexpand(True)
-
 
 def _show_confirm_dialog(core: UICore, message: str, action: str):
     """Show a confirmation dialog before executing an action"""
@@ -2798,9 +2834,12 @@ class ControlCenterApp:
         self.window = ui_build_containers(self.core, xml_root)
         if hidden_at_startup:
             self.window.hide()
+        else:
+            self.window.present()
 
     def run(self):
         self.core.start_refresh()
+        self.core.set_tab_focus()
 
         if not self.hidden_at_startup:
             self.core.start_gamepad()
