@@ -249,7 +249,9 @@ class GamePads:
             "joystick1up": "axis_up",
             "joystick1down": "axis_down",
             "joystick1left": "axis_left",
-            "joystick1right": "axis_right"
+            "joystick1right": "axis_right",
+            "pageup": "previous_tab",
+            "pagedown": "next_tab",
         }
 
         # get devices mappings
