@@ -165,9 +165,22 @@ class UICore:
         win.set_name("popup-root")
 
         x0, y0, sw, sh = get_primary_geometry()
-        # Set width to 70% and max height to 70%
-        width = int(sw * 0.70)
-        max_height = int(sh * 0.70)
+        width, max_height = sw, sh
+        # small screens vs full size (>= 1280 x 720)
+        scale_class = "small"
+        if sw >= 1280:
+            width = int(sw * 0.80)
+            scale_class = "full"
+        if sw >= 1920:
+            width = int(sw * 0.70)
+            scale_class = "full"
+        if sh >= 720:
+            max_height = int(sh * 0.90)
+            scale_class = "full"
+        if sh >= 720:
+            max_height = int(sh * 0.80)
+            scale_class = "full"
+        win.get_style_context().add_class(f"scale-{scale_class}")
 
         # Store dimensions for positioning
         self._window_width = width
@@ -176,6 +189,7 @@ class UICore:
         self._screen_y = y0
         self._screen_width = sw
         self._screen_height = sh
+        self._scale_class = scale_class
 
         # Set default size - use max_height as starting point
         win.set_default_size(width, max_height)
@@ -194,7 +208,10 @@ class UICore:
             # On X11, position immediately after realize
             if not is_wayland:
                 center_x = self._screen_x + (self._screen_width - self._window_width) // 2
-                top_y = self._screen_y + 20
+                if self._screen_height - self._max_height > 10:
+                    top_y = self._screen_y + 10
+                else:
+                    top_y = self._screen_y
                 win.move(max(0, center_x), max(0, top_y))
 
         def on_map(_w):
@@ -1153,7 +1170,7 @@ class UICore:
         refresh = float(sub.attrs.get("refresh", parent_feat.attrs.get("refresh", DEFAULT_REFRESH_SEC)))
 
         # Parse width/height - QR codes are square, so if only one dimension is specified, use it for both
-        # If neither is specified, default to 200x200
+        # If neither is specified, default to 160x160
         if width and height:
             target_width = int(width)
             target_height = int(height)
@@ -1164,8 +1181,8 @@ class UICore:
             target_width = int(height)  # Square
             target_height = int(height)
         else:
-            target_width = 200
-            target_height = 200
+            target_width = 160
+            target_height = 160
 
         img = Gtk.Image()
 
@@ -1328,8 +1345,9 @@ def ui_build_containers(core: UICore, xml_root):
     scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
     scrolled.set_propagate_natural_width(False)  # Don't let content expand window width
     scrolled.set_propagate_natural_height(True)  # DO propagate height so window sizes correctly
-    # Set a reasonable minimum height for the scrolled area
-    scrolled.set_min_content_height(400)
+    # Set a reasonable minimum height for the scrolled area (with 80px room for header/footer)
+    available = max(300, core._max_height - 80)
+    scrolled.set_max_content_height(available)
     outer.pack_start(scrolled, True, True, 0)
 
     content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -1455,7 +1473,7 @@ def ui_build_containers(core: UICore, xml_root):
                     horiz_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
                     horiz_box.set_homogeneous(True)  # Make vgroups equal width for grid alignment
                     horiz_box.set_halign(Gtk.Align.CENTER)
-                    horiz_box.set_size_request(int(core._window_width * 0.90), -1)
+                    horiz_box.set_size_request(int(core._window_width * 0.95), -1)
                     target.pack_start(horiz_box, False, False, 0)
 
                     for sub in child.children:
@@ -1643,7 +1661,7 @@ def _get_group_container_new(core: UICore, parent_box: Gtk.Box, display_title: s
     frame.set_shadow_type(Gtk.ShadowType.IN)
     frame.set_halign(Gtk.Align.CENTER)  # Center the frame
     # Set a consistent width for all groups (90% of window width)
-    frame.set_size_request(int(core._window_width * 0.90), -1)
+    frame.set_size_request(int(core._window_width * 0.95), -1)
     label = Gtk.Label(label=title)
     label.get_style_context().add_class("group-title")
     frame.set_label_widget(label)
@@ -1659,7 +1677,7 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
     row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=24)
     row_box.set_halign(Gtk.Align.CENTER)  # Center the row contents
     # Set consistent width for all rows (90% of window width)
-    row_box.set_size_request(int(core._window_width * 0.90), -1)
+    row_box.set_size_request(int(core._window_width * 0.95), -1)
     row.add(row_box)
     row.set_above_child(False)
     row.get_style_context().add_class("vgroup-row")
@@ -1901,7 +1919,10 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
             cell_event.get_style_context().add_class("vgroup-cell-first")
 
         cell_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3)  # Reduced spacing
-        cell_box.set_size_request(200, -1)  # Minimum width for grid alignment
+        if core._scale_class == "small":
+            cell_box.set_size_request(80, -1)  # Minimum width for grid alignment
+        else:
+            cell_box.set_size_request(200, -1)  # Minimum width for grid alignment
         cell_event.add(cell_box)
 
         label_text = (child.attrs.get("display", "") or child.attrs.get("name", "") or "").strip()
@@ -2503,7 +2524,10 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
     dialog = Gtk.Window()
     dialog.set_transient_for(core.window)
     dialog.set_modal(True)
-    dialog.set_default_size(400, 200)
+    if core._scale_class == "small":
+        dialog.set_default_size(240, 120)
+    else:
+        dialog.set_default_size(400, 200)
     dialog.set_decorated(False)
     dialog.set_resizable(False)
     dialog.set_type_hint(Gdk.WindowTypeHint.DIALOG)
@@ -2539,7 +2563,10 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
     dialog.add(frame)
 
     inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-    inner.set_border_width(20)
+    if core._scale_class == "small":
+        inner.set_border_width(8)
+    else:
+        inner.set_border_width(20)
     frame.add(inner)
 
     label = Gtk.Label(label=message)
@@ -2558,7 +2585,10 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
 
     cancel_btn = Gtk.Button.new_with_label("Cancel")
     cancel_btn.get_style_context().add_class("cc-button")
-    cancel_btn.set_size_request(100, -1)
+    if core._scale_class == "small":
+        cancel_btn.set_size_request(80, -1)
+    else:
+        cancel_btn.set_size_request(100, -1)
     cancel_btn.set_can_focus(True)
     button_box.pack_start(cancel_btn, False, False, 0)
     cancel_btn.connect("clicked", lambda _: dialog.destroy())
@@ -2566,7 +2596,10 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
 
     confirm_btn = Gtk.Button.new_with_label("Confirm")
     confirm_btn.get_style_context().add_class("cc-button")
-    confirm_btn.set_size_request(100, -1)
+    if core._scale_class == "small":
+        cancel_btn.set_size_request(80, -1)
+    else:
+        cancel_btn.set_size_request(100, -1)
     confirm_btn.set_can_focus(True)
     button_box.pack_start(confirm_btn, False, False, 0)
     buttons.append(confirm_btn)
@@ -2658,7 +2691,10 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
     dialog = Gtk.Window()
     dialog.set_transient_for(core.window)
     dialog.set_modal(True)
-    dialog.set_default_size(550, 500)
+    if core._scale_class == "small":
+        dialog.set_default_size(400, 300)
+    else:
+        dialog.set_default_size(600, 500)
     dialog.set_decorated(False)
     dialog.set_resizable(False)
     dialog.set_type_hint(Gdk.WindowTypeHint.DIALOG)
@@ -2694,7 +2730,10 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
     dialog.add(frame)
 
     inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-    inner.set_border_width(20)
+    if core._scale_class == "small":
+        inner.set_border_width(10)
+    else:
+        inner.set_border_width(20)
     frame.add(inner)
 
     label = Gtk.Label(label=f"Choose {feature_label}:")
@@ -2705,7 +2744,7 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
     # Create a scrolled window for the choices
     scrolled = Gtk.ScrolledWindow()
     scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-    scrolled.set_min_content_height(350)
+    scrolled.set_min_content_height(250)
     inner.pack_start(scrolled, True, True, 0)
 
     # Box to hold choice buttons
