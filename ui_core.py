@@ -394,14 +394,7 @@ class UICore:
         else:
             ctx.remove_class("focused")
 
-    def move_focus(self, delta: int):
-        if not self.focus_rows:
-            return
-        self.reset_inactivity_timer()  # Reset timer on navigation
-        old = self.focus_index
-        self.focus_index = (self.focus_index + delta) % len(self.focus_rows)
-
-        prev_row = self.focus_rows[old]
+    def unhighlight_row(self, prev_row):
         self._row_set_focused(prev_row, False)
         # Clear ALL highlights on the row we leave (vgroup cells and controls)
         try:
@@ -420,6 +413,16 @@ class UICore:
                     ctx.remove_class("choice-selected")
         except Exception:
             pass
+
+    def move_focus(self, delta: int):
+        if not self.focus_rows:
+            return
+        self.reset_inactivity_timer()  # Reset timer on navigation
+        old = self.focus_index
+        self.focus_index = (self.focus_index + delta) % len(self.focus_rows)
+
+        prev_row = self.focus_rows[old]
+        self.unhighlight_row(prev_row)
 
         new_row = self.focus_rows[self.focus_index]
         self._row_set_focused(new_row, True)
@@ -2423,6 +2426,7 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
                         # Remove all tab content rows from focus_rows
                         for r in all_tab_rows:
                             if r in core.focus_rows:
+                                core.unhighlight_row(r)
                                 core.focus_rows.remove(r)
                         # Remove all tab content frames
                         for content_id, content_widget in row._tab_contents.items():
