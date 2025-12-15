@@ -156,15 +156,15 @@ class UICore:
         # small screens vs full size (>= 1280 x 720)
         scale_class = "small"
         if sw >= 1280:
-            width = int(sw * 0.80)
+            width = int(sw * 0.90)
             scale_class = "full"
         if sw >= 1920:
             width = int(sw * 0.70)
             scale_class = "full"
         if sh >= 720:
-            max_height = int(sh * 0.90)
+            max_height = int(sh * 0.95)
             scale_class = "full"
-        if sh >= 720:
+        if sh >= 1080:
             max_height = int(sh * 0.80)
             scale_class = "full"
         win.get_style_context().add_class(f"scale-{scale_class}")
@@ -1322,10 +1322,7 @@ class UICore:
             if not initial_val or initial_val == "null":
                 # Don't render the widget if initial value is empty
                 # Remove the img widget we just added
-                if pack_end:
-                    row_box.remove(img)
-                else:
-                    row_box.remove(img)
+                row_box.remove(img)
                 return None
 
             # Register ID immediately if we have valid initial data
@@ -1353,10 +1350,7 @@ class UICore:
                 update_qrcode(disp)
             else:
                 # Don't render if empty
-                if pack_end:
-                    row_box.remove(img)
-                else:
-                    row_box.remove(img)
+                row_box.remove(img)
                 return None
 
         return img
