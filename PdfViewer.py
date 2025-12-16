@@ -15,6 +15,9 @@ import urllib.request
 import tempfile
 import subprocess
 
+import locale
+_ = locale.gettext
+
 class PdfViewer:
 
     def __init__(self):
@@ -162,7 +165,7 @@ class PdfViewer:
                 button_box.set_border_width(10)
                 main_box.pack_start(button_box, False, False, 0)
     
-                close_btn = Gtk.Button.new_with_label("Close")
+                close_btn = Gtk.Button.new_with_label(_("Close"))
                 close_btn.get_style_context().add_class("cc-button")
                 close_btn.connect("clicked", close_viewer)
                 button_box.pack_start(close_btn, False, False, 0)
@@ -248,7 +251,7 @@ class PdfViewer:
                             if page_count > 1:
                                 prev_btn.set_sensitive(page_num > 1)
                                 next_btn.set_sensitive(page_num < page_count)
-                                page_label.set_text(f"Page {page_num} / {page_count}")
+                                page_label.set_text(f"{page_num} / {page_count}")
     
                         except Exception as e:
                             print(f"Error rendering page {page_num}: {e}")
@@ -261,7 +264,7 @@ class PdfViewer:
     
                 # Only show prev/next buttons if more than one page
                 if page_count > 1:
-                    prev_btn = Gtk.Button.new_with_label("◀ Previous")
+                    prev_btn = Gtk.Button.new_with_label("◀ " + _("Previous"))
                     prev_btn.get_style_context().add_class("cc-button")
                     prev_btn.connect("clicked", lambda *_: render_page(current_page[0] - 1))
                     button_box.pack_start(prev_btn, False, False, 0)
@@ -270,12 +273,12 @@ class PdfViewer:
                     page_label.get_style_context().add_class("value")
                     button_box.pack_start(page_label, False, False, 20)
     
-                    next_btn = Gtk.Button.new_with_label("Next ▶")
+                    next_btn = Gtk.Button.new_with_label(_("Next") + " ▶")
                     next_btn.get_style_context().add_class("cc-button")
                     next_btn.connect("clicked", lambda *_: render_page(current_page[0] + 1))
                     button_box.pack_start(next_btn, False, False, 0)
     
-                close_btn = Gtk.Button.new_with_label("Close")
+                close_btn = Gtk.Button.new_with_label(_("Close"))
                 close_btn.get_style_context().add_class("cc-button")
                 close_btn.connect("clicked", close_viewer)
                 button_box.pack_start(close_btn, False, False, 20)
@@ -362,7 +365,7 @@ class PdfViewer:
                             if page_count > 1:
                                 prev_btn.set_sensitive(page_num > 0)
                                 next_btn.set_sensitive(page_num < page_count - 1)
-                                page_label.set_text(f"Page {page_num + 1} / {page_count}")
+                                page_label.set_text(f"{page_num + 1} / {page_count}")
     
                         except Exception as e:
                             print(f"Error rendering page {page_num + 1}: {e}")
@@ -375,7 +378,7 @@ class PdfViewer:
     
                 # Only show prev/next buttons if more than one page
                 if page_count > 1:
-                    prev_btn = Gtk.Button.new_with_label("◀ Previous")
+                    prev_btn = Gtk.Button.new_with_label("◀ " + _("Previous"))
                     prev_btn.get_style_context().add_class("cc-button")
                     prev_btn.connect("clicked", lambda *_: render_page(current_page[0] - 1))
                     button_box.pack_start(prev_btn, False, False, 0)
@@ -384,12 +387,12 @@ class PdfViewer:
                     page_label.get_style_context().add_class("value")
                     button_box.pack_start(page_label, False, False, 20)
     
-                    next_btn = Gtk.Button.new_with_label("Next ▶")
+                    next_btn = Gtk.Button.new_with_label(_("Next") + " ▶")
                     next_btn.get_style_context().add_class("cc-button")
                     next_btn.connect("clicked", lambda *_: render_page(current_page[0] + 1))
                     button_box.pack_start(next_btn, False, False, 0)
     
-                close_btn = Gtk.Button.new_with_label("Close")
+                close_btn = Gtk.Button.new_with_label(_("Close"))
                 close_btn.get_style_context().add_class("cc-button")
                 close_btn.connect("clicked", close_viewer)
                 button_box.pack_start(close_btn, False, False, 20)
