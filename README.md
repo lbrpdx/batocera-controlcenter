@@ -404,21 +404,21 @@ Creates a button that opens a fullscreen viewer for PDFs, images, or comic book 
 
 ```xml
 <!-- View a local PDF -->
-<pdf name="View Manual" display="/userdata/roms/atari2600/manuals/manual.pdf" />
+<pdf display="View Manual" content="/userdata/roms/atari2600/manuals/manual.pdf" />
 
 <!-- View a comic book archive -->
-<pdf name="View Comic" display="/userdata/library/comic.cbz" />
+<pdf display="View Comic" content="/userdata/library/comic.cbz" />
 
 <!-- View from URL -->
-<pdf name="Online Doc" display="https://example.com/document.pdf" />
+<pdf display="Online Doc" content="https://example.com/document.pdf" />
 
 <!-- Dynamic path from command -->
-<pdf name="Latest screenshot" display="${find /userdata/screenshots -name 'screenshot*.png' | head -1}" />
+<pdf display="Latest screenshot" content="${find /userdata/screenshots -name 'screenshot*.png' | head -1}" />
 ```
 
 **Attributes:**
-- `name`: Button label text (required)
-- `display`: File path or URL to PDF/image (required). Can be `${command}` for dynamic paths
+- `display`: Button label text (required)
+- `content`: File path or URL to PDF/image (required). Can be `${command}` for dynamic paths
 - `align`: Button alignment - `left`, `center` (default), or `right`
 
 **Supported formats:**

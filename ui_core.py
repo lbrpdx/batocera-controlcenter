@@ -1037,20 +1037,20 @@ class UICore:
 
     def build_pdf(self, parent_feat, sub, row_box, pack_end=False):
         """Build a button that opens a PDF or image viewer"""
-        name = (sub.attrs.get("name", "") or "View").strip()
-        display = (sub.attrs.get("display", "") or "").strip()
+        name = (sub.attrs.get("display", "") or "View").strip()
+        content = (sub.attrs.get("content", "") or "").strip()
 
         # Handle command expansion to check if we should render
-        if is_cmd(display):
+        if is_cmd(content):
             # Dynamic path from command - check if it returns anything
-            file_path = run_shell_capture(cmd_of(display)).strip()
+            file_path = run_shell_capture(cmd_of(content)).strip()
             if not file_path or file_path == "null":
                 # Don't render button if command returns empty
                 return None
         else:
-            file_path = display
+            file_path = content
             if not file_path or file_path == "null":
-                # Don't render button if display is empty
+                # Don't render button if "content" is empty
                 return None
 
         btn = Gtk.Button.new_with_label(_(name))

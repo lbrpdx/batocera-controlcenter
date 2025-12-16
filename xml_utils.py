@@ -51,7 +51,7 @@ def validate_xml(root: CCElement) -> tuple[list[str], list[str]]:
         "choice": {"display", "action"},  # runs 'action' when selected
         "img": set(),         # display optional (path, URL, or ${...} command)
         "qrcode": set(),      # display optional (text, URL, or ${...} command to encode as QR)
-        "pdf": {"name", "display"},  # name for button label, display for PDF/image path
+        "pdf": {"display", "content"},  # display for button label, content for PDF/image path
         "tab": set(),         # display optional (tab label)
     }
 
@@ -69,7 +69,7 @@ def validate_xml(root: CCElement) -> tuple[list[str], list[str]]:
         "choice": {"display", "action"},
         "img": {"display", "width", "height", "refresh", "align"},
         "qrcode": {"display", "width", "height", "refresh", "align", "bg"},
-        "pdf": {"name", "display"},
+        "pdf": {"display", "content"},
         "tab": {"display", "align", "target"},
     }
 
