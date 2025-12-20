@@ -69,7 +69,7 @@ def validate_xml(root: CCElement) -> tuple[list[str], list[str]]:
         "choice": {"display", "action"},
         "img": {"display", "width", "height", "refresh", "align"},
         "qrcode": {"display", "width", "height", "refresh", "align", "bg"},
-        "pdf": {"display", "content"},
+        "pdf": {"display", "content", "refresh"},
         "tab": {"display", "align", "target"},
     }
 

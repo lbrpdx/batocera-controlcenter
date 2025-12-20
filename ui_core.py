@@ -88,11 +88,13 @@ def is_cmd(s: str) -> bool:
     s = (s or "").strip()
     return s.startswith("${") and s.endswith("}")
 
-
 def cmd_of(s: str) -> str:
     s = (s or "").strip()
     return s[2:-1].strip() if is_cmd(s) else ""
 
+def is_empty_or_null(s: str) -> bool:
+    s = (s or "").strip()
+    return s == "" or s.lower() == "null"
 
 def _focus_widget(widget: Gtk.Widget):
     try:
@@ -747,6 +749,19 @@ class UICore:
                 threading.Thread(target=lambda: run_shell_capture(act), daemon=True).start()
         return cb
 
+    def _recompute_conditionals(self):
+        """Recompute visibility for all widgets with 'if' conditions."""
+        if hasattr(self, '_conditional_widgets'):
+            for widget, condition in self._conditional_widgets:
+                try:
+                    should_show = evaluate_if_condition(condition, self.rendered_ids)
+                    widget.set_visible(should_show)
+                    if DEBUG:
+                        print(f"[COND] {condition} -> {should_show}, IDs={self.rendered_ids}")
+                except Exception:
+                    pass
+
+    # ---- Builders for UI elements ----
     def build_text(self, parent_feat, sub, row_box, align_end=False):
         lbl = Gtk.Label(label="")
         lbl.get_style_context().add_class("value")
@@ -784,20 +799,36 @@ class UICore:
         if if_condition:
             # Track this widget for dynamic visibility updates
             self._conditional_widgets.append((lbl, if_condition))
-            # Initially hide, will be shown after IDs are registered
-            lbl.set_visible(False)
 
-        # Check if display contains ${...} command substitution
-        # Use expansion if: has ${, OR doesn't match pure ${...} format
+        def show_and_register(text: str, _lbl=lbl, _sub=sub, _core=self):
+            _lbl.set_text(text)
+            _lbl.set_visible(True)
+            register_element_id(_sub, _core.rendered_ids)
+
+        def hide_and_unregister(_lbl=lbl, _sub=sub, _core=self):
+            _lbl.set_text("")
+            _lbl.set_visible(False)
+            e_id = (_sub.attrs.get("id", "") or "").strip()
+            if e_id and e_id in _core.rendered_ids:
+                _core.rendered_ids.discard(e_id)
+
+        # Mixed substitution: expand string each tick
         if "${" in disp and not is_cmd(disp):
-            # Mixed content or multiple commands - use command substitution
             def upd_expand(_l=lbl, _disp=disp, _sub=sub, _core=self):
                 result = expand_command_string(_disp)
-                _l.set_text(result)
-                # Register ID only if content is non-empty
-                if result.strip():
+                result_stripped = result.strip()
+                if result_stripped and result_stripped.lower() != "null":
+                    _l.set_text(result)
+                    _l.set_visible(True)
                     register_element_id(_sub, _core.rendered_ids)
-            # Create a dummy refresh task that calls our update function
+                else:
+                    _l.set_text("")
+                    _l.set_visible(False)
+                    e_id = (_sub.attrs.get("id", "") or "").strip()
+                    if e_id and e_id in _core.rendered_ids:
+                        _core.rendered_ids.discard(e_id)
+                _core._recompute_conditionals()
+
             class ExpandRefreshTask:
                 def __init__(self, update_fn, interval_sec):
                     self.update_fn = update_fn
@@ -827,41 +858,61 @@ class UICore:
                     return False
 
             self.refreshers.append(ExpandRefreshTask(upd_expand, refresh))
-            # Defer initial value to idle for faster startup
+
+            # Initial evaluation
             def set_initial():
                 initial_value = expand_command_string(disp)
-                lbl.set_text(initial_value)
-                if initial_value.strip():
-                    register_element_id(sub, self.rendered_ids)
+                if is_empty_or_null(initial_value):
+                    hide_and_unregister()
+                else:
+                    show_and_register(initial_value)
+                self._recompute_conditionals()
                 return False
+
             GLib.idle_add(set_initial)
+
         elif is_cmd(disp):
             c = cmd_of(disp)
-            # Defer initial value to idle for faster startup
+
+            # Initial evaluation
             def set_initial():
                 initial_val = run_shell_capture(c).strip()
-                lbl.set_text(initial_val)
-                if initial_val:
-                    register_element_id(sub, self.rendered_ids)
+                if is_empty_or_null(initial_val):
+                    hide_and_unregister()
+                else:
+                    show_and_register(initial_val)
+                self._recompute_conditionals()
                 return False
+
             GLib.idle_add(set_initial)
 
             def upd(val: str, _l=lbl, _sub=sub, _core=self):
-                _l.set_text(val)
-                # Register/unregister ID based on content
-                if val.strip():
+                txt = (val or "").strip()
+                if txt and txt.lower() != "null":
+                    _l.set_text(txt)
+                    _l.set_visible(True)
                     register_element_id(_sub, _core.rendered_ids)
                 else:
-                    # Unregister ID if content becomes empty
-                    elem_id = _sub.attrs.get("id", "").strip()
-                    if elem_id and elem_id in _core.rendered_ids:
-                        _core.rendered_ids.discard(elem_id)
+                    _l.set_text("")
+                    _l.set_visible(False)
+                    e_id = (_sub.attrs.get("id", "") or "").strip()
+                    if e_id and e_id in _core.rendered_ids:
+                        _core.rendered_ids.discard(e_id)
+                _core._recompute_conditionals()
+
             self.refreshers.append(RefreshTask(upd, c, refresh))
+
         else:
-            lbl.set_text(disp)
-            # Register ID for static text (always has content)
-            if disp.strip():
+            # Static text
+            if is_empty_or_null(disp):
+                hide_and_unregister(lbl, sub, self)
+            else:
+                lbl.set_text(disp)
+                lbl.set_visible(True)
                 register_element_id(sub, self.rendered_ids)
+
+        return lbl
+
 
     def build_button(self, parent_feat, sub, row_box, pack_end=False):
         text = (sub.attrs.get("display", "") or "Button").strip()
@@ -1035,69 +1086,228 @@ class UICore:
 
         return tab_btn
 
+
     def build_pdf(self, parent_feat, sub, row_box, pack_end=False):
-        """Build a button that opens a PDF or image viewer"""
+        """Build a button that opens a PDF or image viewer, without initial flash when content is empty,
+        and dynamically integrates with controller focus when added/removed."""
         name = (sub.attrs.get("display", "") or "View").strip()
         content = (sub.attrs.get("content", "") or "").strip()
+        refresh = float(sub.attrs.get("refresh", parent_feat.attrs.get("refresh", DEFAULT_REFRESH_SEC)))
 
-        # Handle command expansion to check if we should render
-        if is_cmd(content):
-            # Dynamic path from command - check if it returns anything
-            file_path = run_shell_capture(cmd_of(content)).strip()
-            if not file_path or file_path == "null":
-                # Don't render button if command returns empty
-                return None
-        else:
-            file_path = content
-            if not file_path or file_path == "null":
-                # Don't render button if "content" is empty
-                return None
-
-        btn = Gtk.Button.new_with_label(_(name))
-        btn.get_style_context().add_class("cc-button")
-        btn.set_can_focus(True)
-
-        # Get alignment from attribute (default: center)
         align_attr = (sub.attrs.get("align", "center") or "center").strip().lower()
-        if align_attr == "left":
-            btn.set_halign(Gtk.Align.START)
-        elif align_attr == "right":
-            btn.set_halign(Gtk.Align.END)
-        else:  # center (default)
-            btn.set_halign(Gtk.Align.CENTER)
 
-        (row_box.pack_end if pack_end else row_box.pack_start)(btn, False, False, 6)
+        # Holds the current button and path; both start absent
+        state = {
+            "btn": None,     # Gtk.Button or None
+            "path": None     # str or None
+        }
 
-        def on_click(*_):
-            if file_path:
-                self._dialog_open = True
-                self._about_to_show_dialog = True
-                self.disable_timer()
-                self._suspend_inactivity_timer = True
+        # Determine navigation context: are we inside a feature row (left/right with _items),
+        # or inside a focusable vgroup/hgroup cell (cell_controls)?
+        # We try to find the nearest EventBox (cell) by walking up the parents of row_box.
+        def find_cell_eventbox(widget):
+            w = widget
+            try:
+                while w is not None:
+                    if isinstance(w, Gtk.EventBox) and hasattr(w, "get_style_context") and "vgroup-cell" in w.get_style_context().list_classes():
+                        return w
+                    w = w.get_parent()
+            except Exception:
+                pass
+            return None
 
-                try:
-                    def pdfviewer_on_destroy():
-                        # Resume inactivity timer
-                        self.reset_inactivity_timer()
-                        self._suspend_inactivity_timer = False
-                        self._dialog_open = False
-                        self._handle_gamepad_action = self._handle_gamepad_action_main
-                    def pdfviewer_on_quit():
-                        self.quit()
-                    pdfviewer = PdfViewer()
-                    pdfviewer.open(self.window, file_path, pdfviewer_on_destroy, pdfviewer_on_quit)
-                    self._handle_gamepad_action = pdfviewer.handle_gamepad_action
-                    self._about_to_show_dialog = False
-                except Exception as e:
+        # Feature row is two levels up: row_box belongs to a Gtk.EventBox row created by _build_feature_row
+        feature_row = None
+        try:
+            p = row_box.get_parent()
+            if isinstance(p, Gtk.EventBox):
+                feature_row = p
+        except Exception:
+            feature_row = None
+
+        cell_ev = find_cell_eventbox(row_box)
+
+        def add_to_navigation(btn: Gtk.Button):
+            """Add button to controller navigation structures based on context."""
+            try:
+                # Feature row: add to _items for left/right selection
+                if feature_row is not None:
+                    if not hasattr(feature_row, "_items"):
+                        feature_row._items = []
+                        feature_row._item_index = 0
+                    feature_row._items.append(btn)
+                # Cell context: add into its controls list so row focus can navigate within the cell
+                if cell_ev is not None:
+                    if not hasattr(cell_ev, "_control_index"):
+                        cell_ev._control_index = 0
+                    # Find the tuple (cell_event, controls) in the parent row._cells
+                    # The parent row is the EventBox that owns the cell_ev.
+                    parent_row = None
+                    rp = cell_ev.get_parent()
+                    while rp is not None and not isinstance(rp, Gtk.EventBox):
+                        rp = rp.get_parent()
+                    if isinstance(rp, Gtk.EventBox) and hasattr(rp, "_cells"):
+                        parent_row = rp
+                    if parent_row:
+                        for i, (cev, controls) in enumerate(parent_row._cells):
+                            if cev is cell_ev:
+                                controls.append(btn)
+                                # Mark row as selectable if it wasn’t
+                                if not hasattr(parent_row, "_on_activate"):
+                                    parent_row._on_activate = None
+                                # Ensure row is registered (it already is if _cells exists)
+                                break
+            except Exception:
+                pass
+
+        def remove_from_navigation(btn: Gtk.Button):
+            """Remove button from controller navigation structures."""
+            try:
+                if feature_row is not None and hasattr(feature_row, "_items"):
+                    if btn in feature_row._items:
+                        feature_row._items.remove(btn)
+                        # Clamp index
+                        if hasattr(feature_row, "_item_index"):
+                            feature_row._item_index = max(0, min(len(feature_row._items) - 1, feature_row._item_index))
+                if cell_ev is not None:
+                    parent_row = None
+                    rp = cell_ev.get_parent()
+                    while rp is not None and not isinstance(rp, Gtk.EventBox):
+                        rp = rp.get_parent()
+                    if isinstance(rp, Gtk.EventBox) and hasattr(rp, "_cells"):
+                        parent_row = rp
+                    if parent_row:
+                        for i, (cev, controls) in enumerate(parent_row._cells):
+                            if cev is cell_ev and btn in controls:
+                                controls.remove(btn)
+                                # Clamp control index
+                                if hasattr(cev, "_control_index"):
+                                    cev._control_index = max(0, min(len(controls) - 1, cev._control_index))
+                                break
+            except Exception:
+                pass
+
+        def make_button():
+            """Create and pack the button with proper styling; do not call show explicitly."""
+            btn = Gtk.Button.new_with_label(_(name))
+            btn.get_style_context().add_class("cc-button")
+            btn.set_can_focus(True)
+
+            if align_attr == "left":
+                btn.set_halign(Gtk.Align.START)
+            elif align_attr == "right":
+                btn.set_halign(Gtk.Align.END)
+            else:
+                btn.set_halign(Gtk.Align.CENTER)
+
+            (row_box.pack_end if pack_end else row_box.pack_start)(btn, False, False, 6)
+            # Integrate into navigation now that it's packed
+            add_to_navigation(btn)
+            return btn
+
+        def open_pdf_viewer(file_path: str):
+            if not file_path:
+                return
+            self._dialog_open = True
+            self._about_to_show_dialog = True
+            self.disable_timer()
+            self._suspend_inactivity_timer = True
+            try:
+                def pdfviewer_on_destroy():
+                    # Resume inactivity timer
+                    self.reset_inactivity_timer()
+                    self._suspend_inactivity_timer = False
                     self._dialog_open = False
-                    print(e)
+                    self._handle_gamepad_action = self._handle_gamepad_action_main
 
-        btn.connect("clicked", on_click)
+                def pdfviewer_on_quit():
+                    self.quit()
 
-        # Register ID for pdf buttons (they produce visual content)
-        register_element_id(sub, self.rendered_ids)
+                pdfviewer = PdfViewer()
+                pdfviewer.open(self.window, file_path, pdfviewer_on_destroy, pdfviewer_on_quit)
+                self._handle_gamepad_action = pdfviewer.handle_gamepad_action
+                self._about_to_show_dialog = False
+            except Exception as e:
+                self._dialog_open = False
+                print(e)
 
-        return btn
+        def connect_click(btn):
+            btn.connect("clicked", lambda *_: (open_pdf_viewer(state["path"]) if state["path"] else None))
+
+        def register_or_unregister_id(visible: bool):
+            if visible:
+                register_element_id(sub, self.rendered_ids)
+            else:
+                elem_id = sub.attrs.get("id", "").strip()
+                if elem_id and elem_id in self.rendered_ids:
+                    self.rendered_ids.discard(elem_id)
+
+        def ensure_button_visible(path: str):
+            """Ensure button exists and is visible with a valid path, and part of navigation."""
+            # Create the button if it doesn't exist yet
+            if state["btn"] is None:
+                btn = make_button()
+                state["btn"] = btn
+                connect_click(btn)
+            # Show and register ID
+            state["btn"].set_visible(True)
+            register_or_unregister_id(True)
+            state["path"] = path
+
+        def ensure_button_absent():
+            """Ensure button is removed and ID is unregistered, and navigation is updated."""
+            state["path"] = None
+            register_or_unregister_id(False)
+            if state["btn"] is not None:
+                # Remove from navigation first
+                remove_from_navigation(state["btn"])
+                # Remove the button from the row to avoid any flash on subsequent show_all calls
+                try:
+                    if state["btn"].get_parent() is row_box:
+                        row_box.remove(state["btn"])
+                except Exception:
+                    pass
+                state["btn"] = None
+
+        # Static content
+        if content and not is_cmd(content):
+            path = content.strip()
+            if not path or path.lower() == "null":
+                # Do not create or pack any button → no flash and no navigation entry
+                return None
+            # Valid at startup: create and show button, add to navigation
+            ensure_button_visible(path)
+            return state["btn"]
+
+        # Dynamic content via ${...}
+        if is_cmd(content):
+            c = cmd_of(content)
+
+            # Initial evaluation before creating any widget
+            initial_path = run_shell_capture(c).strip()
+            if not initial_path or initial_path.lower() == "null":
+                # Keep absent → no flash, no navigation
+                state["path"] = None
+            else:
+                ensure_button_visible(initial_path)
+
+            # Refresh task toggles presence cleanly
+            def upd(val: str):
+                path = (val or "").strip()
+                if path and path.lower() != "null":
+                    # Ensure button exists and is visible with updated path
+                    ensure_button_visible(path)
+                else:
+                    # Remove button and unregister ID
+                    ensure_button_absent()
+
+            self.refreshers.append(RefreshTask(lambda v, f=upd: f(v), c, refresh))
+            # Return button (may be None if initial path invalid)
+            return state["btn"]
+
+        # No content provided → do not render
+        return None
+
 
     def build_img(self, parent_feat, sub, row_box, pack_end=False):
         """Build an image widget from file path, URL, or ${...} command"""
@@ -1236,7 +1446,6 @@ class UICore:
             target_height = 160
 
         img = Gtk.Image()
-
         # Set size request to ensure consistent sizing with regular images
         img.set_size_request(target_width, target_height)
 
@@ -1265,8 +1474,10 @@ class UICore:
                     r = int(hex_color[0:2], 16) / 255.0
                     g = int(hex_color[2:4], 16) / 255.0
                     b = int(hex_color[4:6], 16) / 255.0
+
                     def srgb_to_linear(c):
                         return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
                     R, G, B = map(srgb_to_linear, (r, g, b))
                     luminance = 0.2126 * R + 0.7152 * G + 0.0722 * B
                     return luminance < 0.5
@@ -1300,51 +1511,76 @@ class UICore:
                 # Scale to target size
                 if pixbuf:
                     pixbuf = pixbuf.scale_simple(target_width, target_height, GdkPixbuf.InterpType.BILINEAR)
-
                 return pixbuf
             except Exception as e:
                 print(f"Error generating QR code for '{data}': {e}")
-            return None
+                return None
 
         def update_qrcode(data: str):
             """Update the QR code image widget"""
             def do_generate():
                 pixbuf = generate_qrcode(data)
                 if pixbuf:
-                    GLib.idle_add(lambda pb=pixbuf: img.set_from_pixbuf(pb) or False)
-                # Note: ID registration is now done synchronously before calling this
-            # Generate in background thread to avoid blocking
+                    # Show and update image when valid data
+                    GLib.idle_add(lambda pb=pixbuf: (img.set_from_pixbuf(pb), img.set_visible(True)) or False)
+                else:
+                    # Hide when data is empty/null
+                    def hide():
+                        img.clear()
+                        img.set_visible(False)
+                        return False
+                    GLib.idle_add(hide)
             threading.Thread(target=do_generate, daemon=True).start()
 
         # Check if display is a command or static text
         if is_cmd(disp):
             # Dynamic QR code from command output
             c = cmd_of(disp)
+
             # Get initial value to check if we should render at all
             initial_val = run_shell_capture(c).strip()
-            if not initial_val or initial_val == "null":
-                # Don't render the widget if initial value is empty
-                # Remove the img widget we just added
-                row_box.remove(img)
-                return None
+            if not initial_val or initial_val.lower() == "null":
+                # Keep the widget hidden; allow later refresh to show it when valid
+                img.set_visible(False)
+            else:
+                # Initial render is valid
+                register_element_id(sub, self.rendered_ids)
+                self._recompute_conditionals()
+                update_qrcode(initial_val)
 
             # Register ID immediately if we have valid initial data
             register_element_id(sub, self.rendered_ids)
+            # Recompute conditionals (so labels depending on the command reflect state now)
+            self._recompute_conditionals()
 
             def upd(val: str, _img=img, _sub=sub, _core=self):
-                # Only generate QR code if data is non-empty
-                if val.strip() and val.strip() != "null":
-                    update_qrcode(val)
-                    # Make sure ID is registered
+                txt = (val or "").strip()
+                if txt and txt.lower() != "null":
+                    update_qrcode(txt)
+                    # Ensure ID is registered when content is present
                     register_element_id(_sub, _core.rendered_ids)
+                    # Ensure widget is visible and recompute conditionals
+                    GLib.idle_add(lambda: (_img.set_visible(True), _core._recompute_conditionals(), False)[2])
                 else:
-                    # Unregister ID if content becomes empty
-                    elem_id = _sub.attrs.get("id", "").strip()
-                    if elem_id and elem_id in _core.rendered_ids:
-                        _core.rendered_ids.discard(elem_id)
+                    # Clear, hide, and unregister ID when content disappears
+                    def hide_and_unregister():
+                        try:
+                            _img.clear()
+                        except:
+                            pass
+                        _img.set_visible(False)
+                        elem_id = _sub.attrs.get("id", "").strip()
+                        if elem_id and elem_id in _core.rendered_ids:
+                            _core.rendered_ids.discard(elem_id)
+                        _core._recompute_conditionals()
+                        return False
+                    GLib.idle_add(hide_and_unregister)
+
             self.refreshers.append(RefreshTask(upd, c, refresh))
+
             # Generate initial QR code
             update_qrcode(initial_val)
+
         elif disp:
             # Static QR code - generate immediately
             if disp.strip() and disp.strip() != "null":
@@ -1355,8 +1591,13 @@ class UICore:
                 # Don't render if empty
                 row_box.remove(img)
                 return None
+        else:
+            # No display value; do not render
+            row_box.remove(img)
+            return None
 
         return img
+
 
 
 # ---- Builders for containers per new schema ----
@@ -1633,6 +1874,22 @@ def ui_build_containers(core: UICore, xml_root):
                 find_rows_in_widget(content_widget, content_widget._tab_rows)
 
     win._tab_row = tab_row
+    if tab_row and hasattr(tab_row, '_tabs') and tab_row._tabs:
+        # Find first visible tab
+        first_tab = None
+        for t in tab_row._tabs:
+            if t.is_visible():
+                first_tab = t
+                break
+        if first_tab is not None:
+            # Activate it (this will trigger the existing toggled handler to show content)
+            # Block re-entrancy safety is handled in make_switch_handler
+            first_tab.set_active(True)
+            # Also set keyboard focus on the tab row itself
+            try:
+                first_tab.grab_focus()
+            except Exception:
+                pass
 
     # Footer vgroups at the bottom
     footer_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)

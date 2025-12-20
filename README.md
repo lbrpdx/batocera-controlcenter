@@ -420,9 +420,10 @@ Creates a button that opens a fullscreen viewer for PDFs, images, or comic book 
 - `display`: Button label text (required)
 - `content`: File path or URL to PDF/image (required). Can be `${command}` for dynamic paths
 - `align`: Button alignment - `left`, `center` (default), or `right`
+- `refresh`: Update interval in seconds (default: 0 = no refresh). Can be integer or float (e.g., `1`, `0.5`)
 
 **Supported formats:**
-- **PDF**: Requires `pdftoppm` and `pdfinfo` (from poppler-utils package)
+- **PDF**: Requires `pdftoppm` and `pdfinfo` (usually pre-installed on Batocera)
   - Multi-page navigation with Previous/Next buttons
   - Gamepad: Left/Right or A button to navigate, B to close
 - **CBZ**: Comic Book Archive (ZIP file containing images)
@@ -438,7 +439,6 @@ Creates a button that opens a fullscreen viewer for PDFs, images, or comic book 
 - CBZ files are extracted and images displayed in natural sort order
 - Images are automatically scaled to fit screen
 - Supports both local files and HTTP/HTTPS URLs
-- Requires `pdftoppm` and `pdfinfo` commands for PDF support (usually pre-installed on Batocera)
 
 ### Refresh Behavior
 
