@@ -43,26 +43,30 @@ def evaluate_if_condition(condition: str, rendered_ids: set[str]) -> bool:
 
     Returns True if condition is met, False otherwise.
     """
-    condition = condition.strip()
     if not condition:
-        return True  # Empty condition = always render
+        return True
+
+    s = condition.strip()
+    if not s:
+        return True
 
     # Check for id(xxx) condition
-    if condition.startswith("id(") and condition.endswith(")"):
-        target_id = condition[3:-1].strip()
-        return target_id in rendered_ids
+    if s.startswith("id(") and s.endswith(")"):
+        # no extra strip inside parentheses
+        return s[3:-1] in rendered_ids
 
     # Check for !id(xxx) condition (negation)
-    if condition.startswith("!id(") and condition.endswith(")"):
-        target_id = condition[4:-1].strip()
-        # Return True if ID is NOT registered (show element when ID doesn't exist)
-        return target_id not in rendered_ids
+    if s.startswith("!id(") and s.endswith(")"):
+        return s[4:-1] not in rendered_ids
 
     # Check for ${command} condition
-    if condition.startswith("${") and condition.endswith("}"):
-        cmd = condition[2:-1].strip()
-        result = run_shell_capture(cmd).strip()
-        return bool(result)  # True if non-empty
+    if s.startswith("${") and s.endswith("}"):
+        cmd = s[2:-1].strip()
+        if not cmd:
+            return False
+        result = run_shell_capture(cmd)
+        # avoid extra .strip() allocation when checking emptiness
+        return bool(result) and bool(result.strip())
 
     # Unknown format - default to True to avoid hiding content
     return True
@@ -70,16 +74,22 @@ def evaluate_if_condition(condition: str, rendered_ids: set[str]) -> bool:
 def register_element_id(element, rendered_ids: set[str], core=None):
     """Register an element's ID after it has been rendered with content."""
     element_id = element.attrs.get("id", "").strip()
-    if element_id:
-        rendered_ids.add(element_id)
-        # Trigger immediate update of conditional widgets
-        if core and hasattr(core, '_conditional_widgets'):
-            for widget, condition in core._conditional_widgets:
-                try:
-                    should_show = evaluate_if_condition(condition, rendered_ids)
-                    widget.set_visible(should_show)
-                except:
-                    pass
+    if not element_id:
+        return
+    if element_id in rendered_ids:
+        # Already registered; nothing else to do
+        return
+
+    rendered_ids.add(element_id)
+
+    # Trigger immediate update of conditional widgets
+    if core and hasattr(core, '_conditional_widgets'):
+        for widget, condition in core._conditional_widgets:
+            try:
+                should_show = evaluate_if_condition(condition, rendered_ids)
+                widget.set_visible(should_show)
+            except:
+                pass
 
 ACTION_DEBOUNCE_MS = 100  # Faster response
 WINDOW_TITLE = "Batocera Control Center"
@@ -325,22 +335,17 @@ class UICore:
             return False
 
         # Connect event handlers for user interaction
-        def on_button_press(_w, _ev):
-            """Reset inactivity timer on mouse click"""
-            self.reset_inactivity_timer()
-            return False  # Allow event to propagate
-
-        def on_motion_notify(_w, _ev):
-            """Reset inactivity timer on mouse movement"""
-            self.reset_inactivity_timer()
-            return False  # Allow event to propagate
+        def on_button_motion_notify(_w, _ev):
+            if self._inactivity_timeout_seconds > 0 and not self._suspend_inactivity_timer:
+                self.reset_inactivity_timer()
+            return False
 
         win.connect("realize", on_realize)
         win.connect("map", on_map)
         win.connect("key-press-event", self._on_key_press)
         win.connect("focus-out-event", on_focus_out)
-        win.connect("button-press-event", on_button_press)
-        win.connect("motion-notify-event", on_motion_notify)
+        win.connect("button-press-event", on_button_motion_notify)
+        win.connect("motion-notify-event", on_button_motion_notify)
 
         # Enable events for mouse interaction
         win.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.POINTER_MOTION_MASK)
@@ -704,19 +709,17 @@ class UICore:
     # ---- Rendering helpers for new schema ----
     def reset_inactivity_timer(self):
         """Reset the inactivity timer when user interacts with the window"""
-        if self._inactivity_timeout_seconds <= 0:
+        secs = self._inactivity_timeout_seconds
+        if secs <= 0 or self._suspend_inactivity_timer:
             return
 
-        # Don't reset timer if it's suspended (PDF viewer or confirm dialog open)
-        if self._suspend_inactivity_timer:
-            return
-
-        # Cancel existing timer
-        if self._inactivity_timer_id is not None:
+        # Cancel existing timer only if present
+        tid = self._inactivity_timer_id
+        if tid is not None:
             try:
-                GLib.source_remove(self._inactivity_timer_id)
-            except:
-                pass  # Timer already expired or removed
+                GLib.source_remove(tid)
+            except Exception:
+                pass
             self._inactivity_timer_id = None
 
         # Start new timer - quit if no dialog is open, or if dialog allows timeout
@@ -726,10 +729,8 @@ class UICore:
             self.quit()
             return False
 
-        self._inactivity_timer_id = GLib.timeout_add_seconds(
-            self._inactivity_timeout_seconds,
-            timeout_callback
-        )
+        # Use GLib.timeout_add_seconds directly
+        self._inactivity_timer_id = GLib.timeout_add_seconds(secs, timeout_callback)
 
     def disable_timer(self):
         if self._inactivity_timer_id is not None:
@@ -850,9 +851,11 @@ class UICore:
                     self._timer_id = GLib.timeout_add(delay, self._tick)
 
                 def _tick(self):
-                    def work():
+                    # schedule update on main loop directly (no per-tick thread)
+                    try:
                         GLib.idle_add(self.update_fn)
-                    threading.Thread(target=work, daemon=True).start()
+                    except Exception:
+                        pass
                     if self._active:
                         self._schedule_tick(immediate=False)
                     return False
