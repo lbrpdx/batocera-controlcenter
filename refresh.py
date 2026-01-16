@@ -1,6 +1,6 @@
 # refresh.py — periodic shell-based refresh utilities
 # This file is part of the batocera distribution (https://batocera.org).
-# Copyright (c) 2025 lbrpdx for the Batocera team
+# Copyright (c) 2025-2026 lbrpdx for the Batocera team
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License

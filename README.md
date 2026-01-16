@@ -399,26 +399,29 @@ Generates and displays a QR code from text, URL, or command output. Requires the
 - If neither width nor height is specified, defaults to 200x200 pixels
 - Useful for sharing URLs, WiFi credentials, or dynamic status information
 
-#### `<pdf>` - PDF/Image/CBZ Viewer Button
-Creates a button that opens a fullscreen viewer for PDFs, images, or comic book archives (CBZ).
+#### `<doc>` - Document Viewer Button
+Creates a button that opens a fullscreen viewer for documents including PDFs, images, comic book archives (CBZ), and plain text files.
 
 ```xml
 <!-- View a local PDF -->
-<pdf display="View Manual" content="/userdata/roms/atari2600/manuals/manual.pdf" />
+<doc display="View Manual" content="/userdata/roms/atari2600/manuals/manual.pdf" />
 
 <!-- View a comic book archive -->
-<pdf display="View Comic" content="/userdata/library/comic.cbz" />
+<doc display="View Comic" content="/userdata/library/comic.cbz" />
+
+<!-- View a text file -->
+<doc display="View Log" content="/var/log/system.log" />
 
 <!-- View from URL -->
-<pdf display="Online Doc" content="https://example.com/document.pdf" />
+<doc display="Online Doc" content="https://example.com/document.pdf" />
 
 <!-- Dynamic path from command -->
-<pdf display="Latest screenshot" content="${find /userdata/screenshots -name 'screenshot*.png' | head -1}" />
+<doc display="Latest screenshot" content="${find /userdata/screenshots -name 'screenshot*.png' | head -1}" />
 ```
 
 **Attributes:**
 - `display`: Button label text (required)
-- `content`: File path or URL to PDF/image (required). Can be `${command}` for dynamic paths
+- `content`: File path or URL to document (required). Can be `${command}` for dynamic paths
 - `align`: Button alignment - `left`, `center` (default), or `right`
 - `refresh`: Update interval in seconds (default: 0 = no refresh). Can be integer or float (e.g., `1`, `0.5`)
 
@@ -432,13 +435,18 @@ Creates a button that opens a fullscreen viewer for PDFs, images, or comic book 
   - Gamepad: Left/Right or A button to navigate, B to close
 - **Images**: JPG, PNG, GIF, and other formats supported by GdkPixbuf
   - Gamepad: A or B button to close
+- **Text files**: TXT, LOG, MD, CONF, CFG, INI, JSON, XML, YAML, YML
+  - Scrollable text view with monospace font
+  - Font size controlled by CSS (`.doc-viewer-text` class)
+  - Gamepad: A or B button to close
 
 **Notes:**
 - Opens in fullscreen overlay window
-- PDFs are rendered at 100 DPI for good enough quality
+- PDFs are rendered at 120 DPI for good quality
 - CBZ files are extracted and images displayed in natural sort order
-- Images are automatically scaled to fit screen
+- Images and text are automatically scaled/formatted to fit screen
 - Supports both local files and HTTP/HTTPS URLs
+- Text files use UTF-8 encoding with error replacement for invalid characters
 
 ### Refresh Behavior
 

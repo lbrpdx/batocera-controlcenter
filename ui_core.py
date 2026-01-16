@@ -1,6 +1,6 @@
 # ui_core.py - main UI components for the Control Center
 # This file is part of the batocera distribution (https://batocera.org).
-# Copyright (c) 2025 lbrpdx for the Batocera team
+# Copyright (c) 2025-2026 lbrpdx for the Batocera team
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License
@@ -14,7 +14,7 @@ import gi
 gi.require_version('Gtk', '3.0'); gi.require_version('Gdk', '3.0')
 from gi.repository import Gtk, Gdk, GLib, Pango
 from gamepads import GamePads
-from PdfViewer import PdfViewer
+from DocViewer import DocViewer
 
 import locale
 _ = locale.gettext
@@ -304,9 +304,9 @@ class UICore:
 
         # Track if we have an open dialog to prevent closing on dialog focus
         self._dialog_open = False
-        # Track if we should suspend the inactivity timer (for PDF/confirm dialogs, not choice popups)
+        # Track if we should suspend the inactivity timer (for document/confirm dialogs, not choice popups)
         self._suspend_inactivity_timer = False
-        # Track if dialog allows inactivity timeout (choice popups allow it, PDF/confirm don't)
+        # Track if dialog allows inactivity timeout (choice popups allow it, document/confirm don't)
         self._dialog_allows_timeout = False
 
         # Track when we're about to show a dialog (set by button callbacks)
@@ -1090,8 +1090,8 @@ class UICore:
         return tab_btn
 
 
-    def build_pdf(self, parent_feat, sub, row_box, pack_end=False):
-        """Build a button that opens a PDF or image viewer, without initial flash when content is empty,
+    def build_doc(self, parent_feat, sub, row_box, pack_end=False):
+        """Build a button that opens a document viewer, without initial flash when content is empty,
         and dynamically integrates with controller focus when added/removed."""
         name = (sub.attrs.get("display", "") or "View").strip()
         content = (sub.attrs.get("content", "") or "").strip()
@@ -1208,7 +1208,7 @@ class UICore:
             add_to_navigation(btn)
             return btn
 
-        def open_pdf_viewer(file_path: str):
+        def open_doc_viewer(file_path: str):
             if not file_path:
                 return
             self._dialog_open = True
@@ -1216,26 +1216,26 @@ class UICore:
             self.disable_timer()
             self._suspend_inactivity_timer = True
             try:
-                def pdfviewer_on_destroy():
+                def docviewer_on_destroy():
                     # Resume inactivity timer
                     self.reset_inactivity_timer()
                     self._suspend_inactivity_timer = False
                     self._dialog_open = False
                     self._handle_gamepad_action = self._handle_gamepad_action_main
 
-                def pdfviewer_on_quit():
+                def docviewer_on_quit():
                     self.quit()
 
-                pdfviewer = PdfViewer()
-                pdfviewer.open(self.window, file_path, pdfviewer_on_destroy, pdfviewer_on_quit)
-                self._handle_gamepad_action = pdfviewer.handle_gamepad_action
+                docviewer = DocViewer()
+                docviewer.open(self.window, file_path, docviewer_on_destroy, docviewer_on_quit)
+                self._handle_gamepad_action = docviewer.handle_gamepad_action
                 self._about_to_show_dialog = False
             except Exception as e:
                 self._dialog_open = False
                 print(e)
 
         def connect_click(btn):
-            btn.connect("clicked", lambda *_: (open_pdf_viewer(state["path"]) if state["path"] else None))
+            btn.connect("clicked", lambda *_: (open_doc_viewer(state["path"]) if state["path"] else None))
 
         def register_or_unregister_id(visible: bool):
             if visible:
@@ -1841,11 +1841,11 @@ def ui_build_containers(core: UICore, xml_root):
                         qr_row.set_border_width(4)
                         core.build_qrcode(child, sub, qr_row, pack_end=False)
                         target.pack_start(qr_row, False, False, 3)
-                    elif sub.kind == "pdf":
-                        pdf_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                        pdf_row.set_border_width(4)
-                        core.build_pdf(child, sub, pdf_row, pack_end=False)
-                        target.pack_start(pdf_row, False, False, 3)
+                    elif sub.kind == "doc":
+                        doc_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                        doc_row.set_border_width(4)
+                        core.build_doc(child, sub, doc_row, pack_end=False)
+                        target.pack_start(doc_row, False, False, 3)
 
             # If this is tab content, store it
             if is_tab_content and tab_row:
@@ -2090,8 +2090,8 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                             core.build_img(nested_child, sub, cell_box, pack_end=False)
                         elif sub.kind == "qrcode":
                             core.build_qrcode(nested_child, sub, cell_box, pack_end=False)
-                        elif sub.kind == "pdf":
-                            core.build_pdf(nested_child, sub, cell_box, pack_end=False)
+                        elif sub.kind == "doc":
+                            core.build_doc(nested_child, sub, cell_box, pack_end=False)
 
             cells.append((cell_event, []))
             row_box.pack_start(cell_event, True, True, 12)
@@ -2132,8 +2132,8 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                             core.build_img(hg_child, sub, feat_box, pack_end=False)
                         elif sub.kind == "qrcode":
                             core.build_qrcode(hg_child, sub, feat_box, pack_end=False)
-                        elif sub.kind == "pdf":
-                            btn = core.build_pdf(hg_child, sub, feat_box, pack_end=False)
+                        elif sub.kind == "doc":
+                            btn = core.build_doc(hg_child, sub, feat_box, pack_end=False)
                             if btn:
                                 btn.set_can_focus(True)
                                 cell_controls.append(btn)
@@ -2242,8 +2242,8 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                         btn.connect("clicked", on_confirm_click)
                         cell_controls.append(btn)
                 cell_box.pack_start(nested_box, False, False, 3)
-            elif sub.kind == "pdf":
-                btn = core.build_pdf(child, sub, cell_box, pack_end=False)
+            elif sub.kind == "doc":
+                btn = core.build_doc(child, sub, cell_box, pack_end=False)
                 if btn:
                     btn.set_can_focus(True)
                     cell_controls.append(btn)
@@ -2579,8 +2579,8 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
         elif kind == "qrcode":
             core.build_qrcode(feat, sub, row_box, pack_end=False)
 
-        elif kind == "pdf":
-            btn = core.build_pdf(feat, sub, row_box, pack_end=False)
+        elif kind == "doc":
+            btn = core.build_doc(feat, sub, row_box, pack_end=False)
             if btn:
                 row._items.append(btn)
 

@@ -302,3 +302,22 @@ dialog .dialog-action-area,
 
 /* Focused row background stays transparent; only controls highlight */
 .focused { background-color: transparent; }
+
+/* Document Viewer Text Styling */
+.doc-viewer-text {
+  background-color: #0f1115;
+  color: #e6e9ef;
+  font-family: monospace;
+  font-size: 14pt;
+  padding: 20px;
+}
+
+.scale-small .doc-viewer-text {
+  font-size: 8pt;
+  padding: 10px;
+}
+
+.doc-viewer-text text {
+  background-color: #0f1115;
+  color: #e6e9ef;
+}

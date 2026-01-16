@@ -1,5 +1,5 @@
 # This file is part of the batocera distribution (https://batocera.org).
-# Copyright (c) 2025 lbrpdx for the Batocera team
+# Copyright (c) 2025-2026 lbrpdx for the Batocera team
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License
@@ -18,7 +18,7 @@ import subprocess
 import locale
 _ = locale.gettext
 
-class PdfViewer:
+class DocViewer:
 
     def __init__(self):
         self._handle_gamepad_action = None
@@ -28,7 +28,7 @@ class PdfViewer:
             self._handle_gamepad_action(action)
 
     def open(self, parent_window, file_path: str, f_on_destroy, f_on_quit):
-        """Open a fullscreen PDF or image viewer window"""
+        """Open a fullscreen document viewer window (PDF, images, CBZ, or plain text)"""
     
         # Download file if it's a URL
         local_path = file_path
@@ -50,14 +50,15 @@ class PdfViewer:
                 print(f"Error downloading file: {e}")
                 return
     
-        # Check if it's a PDF, CBZ, or image based on file extension
+        # Check if it's a PDF, CBZ, image, or text file based on file extension
         lower_path = local_path.lower()
         is_pdf = lower_path.endswith('.pdf')
         is_cbz = lower_path.endswith('.cbz')
         is_image = any(lower_path.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'])
+        is_text = any(lower_path.endswith(ext) for ext in ['.txt', '.log', '.md', '.conf', '.cfg', '.ini', '.json', '.xml', '.yaml', '.yml'])
     
         # If we can't determine from extension, try to detect from content (magic numbers)
-        if not is_pdf and not is_cbz and not is_image:
+        if not is_pdf and not is_cbz and not is_image and not is_text:
             try:
                 with open(local_path, 'rb') as f:
                     header = f.read(16)  # Read more bytes for better detection
@@ -65,27 +66,27 @@ class PdfViewer:
                     # Check for PDF magic number
                     if header.startswith(b'%PDF'):
                         is_pdf = True
-                        # print("Detected as PDF from content")
                     # Check for ZIP/CBZ magic number (PK)
                     elif header.startswith(b'PK\x03\x04') or header.startswith(b'PK\x05\x06'):
                         is_cbz = True
-                        # print("Detected as CBZ/ZIP from content")
                     # Check for common image formats
                     elif header.startswith(b'\x89PNG'):
                         is_image = True
-                        # print("Detected as PNG from content")
                     elif header.startswith(b'\xff\xd8\xff'):  # JPEG
                         is_image = True
-                        # print("Detected as JPEG from content")
                     elif header.startswith(b'GIF87a') or header.startswith(b'GIF89a'):
                         is_image = True
-                        # print("Detected as GIF from content")
                     elif header.startswith(b'BM'):  # BMP
                         is_image = True
-                        # print("Detected as BMP from content")
                     elif len(header) >= 12 and header.startswith(b'RIFF') and header[8:12] == b'WEBP':
                         is_image = True
-                        # print("Detected as WEBP from content")
+                    else:
+                        # Try to detect if it's text (UTF-8 or ASCII)
+                        try:
+                            header.decode('utf-8')
+                            is_text = True
+                        except:
+                            pass
             except Exception as e:
                 print(f"Error detecting file type: {e}")
     
@@ -108,21 +109,35 @@ class PdfViewer:
             if not viewer_initialized[0]:
                 return False
     
+            # Don't quit if we're just switching to the close button or other UI elements
             def check_and_close():
-                if not viewer.is_active():
-                    f_on_quit()
+                # Only quit if the viewer window is completely inactive and not just switching focus internally
+                if not viewer.is_active() and not viewer.has_focus():
+                    # Additional check: make sure we're not just focusing on a child widget
+                    focused_widget = viewer.get_focus()
+                    if focused_widget is None:
+                        f_on_quit()
                 return False
-            GLib.timeout_add(200, check_and_close)
+            GLib.timeout_add(500, check_and_close)  # Increased delay to 500ms for better stability
             return False
         viewer.connect("focus-out-event", on_viewer_focus_out)
     
+        # Add keyboard support as fallback
+        def on_key_press(widget, event):
+            # ESC key or B button equivalent
+            if event.keyval == 65307:  # ESC key
+                close_viewer()
+                return True
+            return False
+        viewer.connect("key-press-event", on_key_press)
+        
         # Mark viewer as initialized after fullscreen transition completes
         GLib.timeout_add(1000, lambda: (viewer_initialized.__setitem__(0, True), False)[1])
     
         main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         viewer.add(main_box)
     
-        # Image display area
+        # Image display area (also used for text with TextView)
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         main_box.pack_start(scrolled, True, True, 0)
@@ -130,13 +145,22 @@ class PdfViewer:
         img = Gtk.Image()
         img.set_halign(Gtk.Align.CENTER)
         img.set_valign(Gtk.Align.CENTER)
-        scrolled.add(img)
+        
+        # Text view for plain text files
+        text_view = Gtk.TextView()
+        text_view.set_editable(False)
+        text_view.set_cursor_visible(False)
+        text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        text_view.get_style_context().add_class("doc-viewer-text")
+        text_view.set_left_margin(20)
+        text_view.set_right_margin(20)
+        text_view.set_top_margin(20)
+        text_view.set_bottom_margin(20)
     
         # Define close function early so it can be used by all handlers
         def close_viewer(*_):
             """Properly close the viewer and clean up"""
-            viewer.hide()  # Hide immediately to prevent background visibility
-            GLib.idle_add(viewer.destroy)  # Destroy in idle to ensure clean shutdown
+            viewer.destroy()  # This will trigger the destroy signal and call on_destroy
             return False
     
         if is_image:
@@ -158,6 +182,7 @@ class PdfViewer:
                     pixbuf = pixbuf.scale_simple(new_width, new_height, GdkPixbuf.InterpType.BILINEAR)
     
                 img.set_from_pixbuf(pixbuf)
+                scrolled.add(img)
     
                 # Close button for images
                 button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
@@ -186,6 +211,9 @@ class PdfViewer:
             # PDF handling with pdftoppm (now written in memory, not /tmp)
             try:
                 from gi.repository import Gio
+                
+                # Add img to scrolled window for PDF
+                scrolled.add(img)
     
                 # Get page count
                 result = subprocess.run(['pdfinfo', local_path], capture_output=True, text=True)
@@ -309,6 +337,9 @@ class PdfViewer:
                 import zipfile
                 from gi.repository import Gio
                 import re
+                
+                # Add img to scrolled window for CBZ
+                scrolled.add(img)
     
                 # No write on /tmp we keep the zipfile object open for the duration of the viewer
                 cbz_file = zipfile.ZipFile(local_path, 'r')
@@ -426,9 +457,47 @@ class PdfViewer:
                 error_label.set_line_wrap(True)
                 main_box.pack_start(error_label, True, True, 20)
     
+        elif is_text:
+            # Plain text file handling
+            try:
+                # Read the text file
+                with open(local_path, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+                
+                # Set the text content
+                text_buffer = text_view.get_buffer()
+                text_buffer.set_text(content)
+                
+                # Add text view to scrolled window
+                scrolled.add(text_view)
+                
+                # Close button for text files
+                button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+                button_box.set_halign(Gtk.Align.CENTER)
+                button_box.set_border_width(10)
+                main_box.pack_start(button_box, False, False, 0)
+                
+                close_btn = Gtk.Button.new_with_label(_("Close"))
+                close_btn.get_style_context().add_class("cc-button")
+                close_btn.connect("clicked", close_viewer)
+                button_box.pack_start(close_btn, False, False, 0)
+                
+                # Gamepad navigation for text files
+                def text_gamepad_handler(action: str):
+                    if action in ("back", "activate"):
+                        close_viewer()
+                    return False
+                self._handle_gamepad_action = text_gamepad_handler
+                
+            except Exception as e:
+                print(f"Error loading text file: {e}")
+                error_label = Gtk.Label(label=f"Error loading text file: {e}")
+                error_label.set_line_wrap(True)
+                main_box.pack_start(error_label, True, True, 20)
+    
         else:
             # Unknown file type
-            error_label = Gtk.Label(label=f"Unsupported file type: {local_path}\nSupported: PDF, CBZ, JPG, PNG, GIF")
+            error_label = Gtk.Label(label=f"Unsupported file type: {local_path}\nSupported: PDF, CBZ, JPG, PNG, GIF, TXT")
             error_label.set_line_wrap(True)
             main_box.pack_start(error_label, True, True, 20)
     

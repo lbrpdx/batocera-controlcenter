@@ -1,6 +1,6 @@
 # xml_utils.py — XML model, parser, validator for Batocera Control Center
 # This file is part of the batocera distribution (https://batocera.org).
-# Copyright (c) 2025 lbrpdx for the Batocera team
+# Copyright (c) 2025-2026 lbrpdx for the Batocera team
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License
@@ -36,7 +36,7 @@ def validate_xml(root: CCElement) -> tuple[list[str], list[str]]:
     warnings: list[str] = []
 
     # Allowed tags
-    allowed_tags = {"features", "vgroup", "hgroup", "feature", "text", "button", "button_confirm", "toggle", "choice", "img", "qrcode", "pdf", "tab"}
+    allowed_tags = {"features", "vgroup", "hgroup", "feature", "text", "button", "button_confirm", "toggle", "choice", "img", "qrcode", "doc", "tab"}
 
     # Requirements per tag (name optional everywhere now)
     required_per_tag = {
@@ -51,7 +51,7 @@ def validate_xml(root: CCElement) -> tuple[list[str], list[str]]:
         "choice": {"display", "action"},  # runs 'action' when selected
         "img": set(),         # display optional (path, URL, or ${...} command)
         "qrcode": set(),      # display optional (text, URL, or ${...} command to encode as QR)
-        "pdf": {"display", "content"},  # display for button label, content for PDF/image path
+        "doc": {"display", "content"},  # display for button label, content for document path
         "tab": set(),         # display optional (tab label)
     }
 
@@ -69,7 +69,7 @@ def validate_xml(root: CCElement) -> tuple[list[str], list[str]]:
         "choice": {"display", "action"},
         "img": {"display", "width", "height", "refresh", "align"},
         "qrcode": {"display", "width", "height", "refresh", "align", "bg"},
-        "pdf": {"display", "content", "refresh"},
+        "doc": {"display", "content", "refresh"},
         "tab": {"display", "align", "target"},
     }
 
