@@ -196,10 +196,11 @@ button.cc-toggle {
 }
 
 button.cc-toggle:checked {
-  background-color: #1f3b2a;
-  border-color: #1a2f22;
-  color: #e6e9ef;
+  background-color: #1f2a3b;
+  border-color: #4f8dff;
+  color: #63a4ff;
 }
+
 button.cc-toggle.choice-selected,
 button.cc-toggle.focused-cell,
 button.cc-toggle:focus {
@@ -320,4 +321,94 @@ dialog .dialog-action-area,
 .doc-viewer-text text {
   background-color: #0f1115;
   color: #e6e9ef;
+}
+
+.cc-progressbar {
+  min-width: 200px;
+  min-height: 20px;
+  background-color: #12161f;
+  border: 1px solid #232a36;
+  border-radius: 10px;
+  padding: 2px;
+}
+
+.scale-small .cc-progressbar {
+  min-width: 120px;
+  min-height: 12px;
+  border-radius: 6px;
+  padding: 1px;
+}
+
+.cc-progressbar > trough {
+  background-color: #0f1115;
+  border-radius: 8px;
+  border: none;
+}
+
+.scale-small .cc-progressbar > trough {
+  border-radius: 4px;
+}
+
+.cc-progressbar > trough > progress {
+  background-color: #63a4ff;
+  background-image: none;
+  border-radius: 6px;
+  border: none;
+  min-height: 16px;
+}
+
+.scale-small .cc-progressbar > trough > progress {
+  border-radius: 3px;
+  min-height: 10px;
+}
+
+.cc-progressbar-text {
+  color: #ffffff;
+  font-weight: 600;
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+.cc-switch {
+  background-color: #3d1f1f;
+  border: 2px solid #4a2525;  /* Always 2px border to prevent layout shifts */
+  border-radius: 12px;
+  min-width: 48px;
+  min-height: 24px;
+}
+
+.scale-small .cc-switch {
+  border-radius: 8px;
+  min-width: 32px;
+  min-height: 16px;
+}
+
+.cc-switch:checked {
+  background-color: #63a4ff;
+  border-color: #4f8dff;
+}
+
+.cc-switch > slider {
+  background-color: #ffffff;
+  border: 1px solid #cccccc;
+  border-radius: 50%;
+  min-width: 20px;
+  min-height: 20px;
+  margin: 1px;
+}
+
+.scale-small .cc-switch > slider {
+  min-width: 12px;
+  min-height: 12px;
+}
+
+.cc-switch:checked > slider {
+  background-color: #63a4ff;
+  border-color: #4f8dff;
+}
+
+.cc-switch.focused-cell,
+.cc-switch.choice-selected,
+.cc-switch:focus {
+  border-color: #4f8dff;
+  box-shadow: 0 0 12px rgba(77, 208, 225, 1.0);
 }

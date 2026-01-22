@@ -136,6 +136,16 @@ def _activate_widget(widget: Gtk.Widget):
             widget.set_active(not widget.get_active())
         except Exception:
             pass
+    elif isinstance(widget, Gtk.Switch):
+        try:
+            # Toggle the switch state and emit the state-set signal
+            new_state = not widget.get_active()
+            widget.set_active(new_state)
+            widget.set_state(new_state)
+            # Emit the state-set signal to trigger our handler
+            widget.emit("state-set", new_state)
+        except Exception:
+            pass
 
 class UICore:
     def __init__(self, css_path: str):
@@ -1083,6 +1093,141 @@ class UICore:
 
         return tbtn
 
+    def build_switch(self, parent_feat, sub, row_box, pack_end=False):
+        """Build a switch widget (GtkSwitch) - same functionality as toggle but different appearance"""
+        
+        parent_label = (parent_feat.attrs.get("display", "") or parent_feat.attrs.get("name", "") or "").strip()
+        switch_display = (sub.attrs.get("display", "") or "").strip()
+        
+        # Use switch display if provided, otherwise use parent label
+        label_text = switch_display or parent_label
+        
+        # Create switch widget
+        switch = Gtk.Switch()
+        switch.get_style_context().add_class("cc-switch")
+        switch.set_can_focus(True)
+        
+        # Apply ID as widget name for CSS
+        elem_id = (sub.attrs.get("id", "") or "").strip()
+        if elem_id:
+            switch.set_name(elem_id)
+        
+        # Add to row box
+        if pack_end:
+            row_box.pack_end(switch, False, False, 6)
+        else:
+            row_box.pack_start(switch, False, False, 6)
+        
+        # Get actions and value
+        action_on = (sub.attrs.get("action_on", "") or "").strip()
+        action_off = (sub.attrs.get("action_off", "") or "").strip()
+        value_cmd = (sub.attrs.get("value", "") or "").strip()
+        refresh = float(sub.attrs.get("refresh", parent_feat.attrs.get("refresh", DEFAULT_REFRESH_SEC)))
+        
+        # Handle dynamic visibility for id() and !id() conditions
+        if_condition = (sub.attrs.get("if", "") or "").strip()
+        if if_condition:
+            # Track this widget for dynamic visibility updates
+            self._conditional_widgets.append((switch, if_condition))
+            # Don't initially hide - let the condition be evaluated normally
+        
+        # Always show switch initially to prevent blinking
+        switch.set_visible(True)
+        
+        # Store last state to avoid unnecessary updates and track user interactions
+        last_state = [None]  # Use list to make it mutable in nested function
+        switch_state = {"updating": False, "last_user_change": 0}
+        
+        def update_switch_state(val: str):
+            """Update switch state based on command output"""
+            try:
+                import time
+                # Don't update if we just changed it (within 1 second)
+                if time.time() - switch_state["last_user_change"] < 1.0:
+                    return
+                
+                normalized = normalize_bool_str(val)
+                is_on = normalized.lower() in ("true", "1", "on", "yes", "enabled", "enable")
+                
+                # Check if state actually changed to avoid unnecessary updates and blinking
+                if last_state[0] is not None and last_state[0] == is_on:
+                    return  # No change, don't update
+                
+                last_state[0] = is_on
+                
+                # Only update if state actually changed and not currently updating
+                if not switch_state["updating"] and switch.get_active() != is_on:
+                    switch_state["updating"] = True
+                    switch.set_active(is_on)
+                    switch.set_state(is_on)  # Also set the state for GtkSwitch
+                    switch_state["updating"] = False
+                
+                # Don't change visibility - keep switch always visible once created
+                # Register ID when content is present
+                register_element_id(sub, self.rendered_ids)
+                
+            except Exception as e:
+                print(f"Error updating switch state: {e}")
+                last_state[0] = None
+        
+        def on_switch_toggled(_switch, state):
+            """Handle switch toggle events"""
+            try:
+                import time
+                # Ignore switch events triggered by refresh updates
+                if switch_state["updating"]:
+                    return False  # Return False to allow the state change
+                
+                self.reset_inactivity_timer()  # Reset timer on interaction
+                
+                # Mark that user just changed it
+                switch_state["last_user_change"] = time.time()
+                
+                if state and action_on:
+                    if self.debouncer.allow(f"switch_on:{action_on}"):
+                        threading.Thread(target=lambda: run_shell_capture(action_on), daemon=True).start()
+                elif not state and action_off:
+                    if self.debouncer.allow(f"switch_off:{action_off}"):
+                        threading.Thread(target=lambda: run_shell_capture(action_off), daemon=True).start()
+                
+                return False  # Return False to allow the state change
+            except Exception as e:
+                print(f"Error in switch toggle handler: {e}")
+                return False
+        
+        # Connect the switch signal - use "state-set" for GtkSwitch
+        switch.connect("state-set", on_switch_toggled)
+        
+        # Set up value monitoring if provided
+        if is_cmd(value_cmd):
+            c = cmd_of(value_cmd)
+            
+            # Get initial state
+            initial_val = run_shell_capture(c).strip()
+            if initial_val:
+                update_switch_state(initial_val)
+            # Don't hide switch if no initial value - keep it visible
+            
+            def upd(val: str, _switch=switch, _sub=sub, _core=self):
+                txt = (val or "").strip()
+                if txt and txt.lower() != "null":
+                    update_switch_state(txt)
+                    # Don't change visibility - keep switch always visible
+                    register_element_id(_sub, _core.rendered_ids)
+                # Don't hide switch on empty values to prevent blinking
+            
+            self.refreshers.append(RefreshTask(upd, c, refresh))
+        
+        elif value_cmd:
+            # Static value
+            update_switch_state(value_cmd)
+        else:
+            # No value command - switch starts in off state but is functional
+            switch.set_active(False)
+            register_element_id(sub, self.rendered_ids)
+        
+        return switch
+
     def build_tab(self, parent_feat, sub, row_box, pack_end=False):
         """Build a tab button that controls content visibility"""
         text = (sub.attrs.get("display", "") or "Tab").strip()
@@ -1632,6 +1777,176 @@ class UICore:
 
         return img
 
+    def build_progressbar(self, parent_feat, sub, row_box, pack_end=False):
+        """Build a progress bar widget from value or ${...} command"""
+        
+        # Create container for progress bar with overlay text
+        container = Gtk.Overlay()
+        container.set_halign(Gtk.Align.CENTER)
+        
+        # Create progress bar
+        progress = Gtk.ProgressBar()
+        progress.get_style_context().add_class("cc-progressbar")
+        progress.set_show_text(False)  # We'll overlay our own text
+        
+        # Create text label for displaying the value (overlaid on progress bar)
+        text_label = Gtk.Label()
+        text_label.get_style_context().add_class("cc-progressbar-text")
+        text_label.set_xalign(0.5)  # Center the text horizontally
+        text_label.set_halign(Gtk.Align.CENTER)  # Center the label widget
+        text_label.set_valign(Gtk.Align.CENTER)  # Center vertically on the progress bar
+        
+        # Add progress bar as base layer
+        container.add(progress)
+        # Add text label as overlay
+        container.add_overlay(text_label)
+        
+        # Add to row box
+        if pack_end:
+            row_box.pack_end(container, False, False, 6)
+        else:
+            row_box.pack_start(container, False, False, 6)
+        
+        # Get min/max values (default to 0-100)
+        min_val = float(sub.attrs.get("min", "0"))
+        max_val = float(sub.attrs.get("max", "100"))
+        
+        # Ensure valid range
+        if max_val <= min_val:
+            max_val = min_val + 100
+        
+        # Apply ID as widget name for CSS
+        elem_id = (sub.attrs.get("id", "") or "").strip()
+        if elem_id:
+            progress.set_name(elem_id)
+            text_label.set_name(f"{elem_id}-text")
+        
+        # Get display value
+        disp = (sub.attrs.get("display", "") or "").strip()
+        refresh = float(sub.attrs.get("refresh", parent_feat.attrs.get("refresh", DEFAULT_REFRESH_SEC)))
+        
+        # Store last value to avoid unnecessary updates
+        last_value = [None]  # Use list to make it mutable in nested function
+        
+        def update_progress(value_str: str):
+            """Update the progress bar with a new value"""
+            try:
+                # Parse the value
+                value_str = value_str.strip()
+                if not value_str or value_str.lower() == "null":
+                    # Hide when no value
+                    container.set_visible(False)
+                    last_value[0] = None
+                    return
+                
+                # Try to parse as number
+                try:
+                    value = float(value_str)
+                except ValueError:
+                    # If not a number, try to extract number from string
+                    import re
+                    match = re.search(r'[-+]?\d*\.?\d+', value_str)
+                    if match:
+                        value = float(match.group())
+                    else:
+                        container.set_visible(False)
+                        last_value[0] = None
+                        return
+                
+                # Clamp value to range
+                value = max(min_val, min(max_val, value))
+                
+                # Check if value actually changed to avoid unnecessary updates
+                if last_value[0] is not None and abs(value - last_value[0]) < 0.5:  # Less than 0.5% change
+                    return
+                
+                last_value[0] = value
+                
+                # Calculate fraction (0.0 to 1.0)
+                new_fraction = (value - min_val) / (max_val - min_val) if max_val > min_val else 0.0
+                
+                # Update progress bar
+                progress.set_fraction(new_fraction)
+                
+                # Update text label - show the actual value with % symbol
+                if value == int(value):
+                    text_label.set_text(f"{int(value)}%")
+                else:
+                    text_label.set_text(f"{value:.1f}%")
+                
+                # Show container
+                container.set_visible(True)
+                
+            except Exception as e:
+                print(f"Error updating progress bar: {e}")
+                container.set_visible(False)
+                last_value[0] = None
+        
+        # Handle dynamic visibility for id() and !id() conditions
+        if_condition = (sub.attrs.get("if", "") or "").strip()
+        if if_condition:
+            # Track this widget for dynamic visibility updates
+            self._conditional_widgets.append((container, if_condition))
+            # Initially hide, will be shown after IDs are registered
+            container.set_visible(False)
+        
+        # Check if display contains ${...} command substitution
+        if is_cmd(disp):
+            # Dynamic progress bar from command output
+            c = cmd_of(disp)
+            
+            # Get initial value to check if we should render at all
+            initial_val = run_shell_capture(c).strip()
+            if not initial_val or initial_val.lower() == "null":
+                # Keep the widget hidden; allow later refresh to show it when valid
+                container.set_visible(False)
+            else:
+                # Initial render is valid
+                register_element_id(sub, self.rendered_ids)
+                self._recompute_conditionals()
+                update_progress(initial_val)
+            
+            def upd(val: str, _container=container, _sub=sub, _core=self):
+                txt = (val or "").strip()
+                if txt and txt.lower() != "null":
+                    update_progress(txt)
+                    # Ensure ID is registered when content is present
+                    register_element_id(_sub, _core.rendered_ids)
+                    # Ensure widget is visible and recompute conditionals
+                    GLib.idle_add(lambda: (_container.set_visible(True), _core._recompute_conditionals(), False)[2])
+                else:
+                    # Hide and unregister ID when content disappears
+                    def hide_and_unregister():
+                        _container.set_visible(False)
+                        elem_id = _sub.attrs.get("id", "").strip()
+                        if elem_id and elem_id in _core.rendered_ids:
+                            _core.rendered_ids.discard(elem_id)
+                        _core._recompute_conditionals()
+                        return False
+                    GLib.idle_add(hide_and_unregister)
+            
+            self.refreshers.append(RefreshTask(upd, c, refresh))
+            
+            # Set initial value
+            update_progress(initial_val)
+            
+        elif disp:
+            # Static progress bar - set value immediately
+            if disp.strip() and disp.strip() != "null":
+                # Register ID immediately for static progress bars
+                register_element_id(sub, self.rendered_ids)
+                update_progress(disp)
+            else:
+                # Don't render if empty
+                row_box.remove(container)
+                return None
+        else:
+            # No display value; do not render
+            row_box.remove(container)
+            return None
+        
+        return container
+
 
 
 # ---- Builders for containers per new schema ----
@@ -1884,6 +2199,11 @@ def ui_build_containers(core: UICore, xml_root):
                         qr_row.set_border_width(4)
                         core.build_qrcode(child, sub, qr_row, pack_end=False)
                         target.pack_start(qr_row, False, False, 3)
+                    elif sub.kind == "progressbar":
+                        progress_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                        progress_row.set_border_width(4)
+                        core.build_progressbar(child, sub, progress_row, pack_end=False)
+                        target.pack_start(progress_row, False, False, 3)
                     elif sub.kind == "doc":
                         doc_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
                         doc_row.set_border_width(4)
@@ -2114,6 +2434,9 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                 elif nested_child.kind == "qrcode":
                     core.build_qrcode(child, nested_child, cell_box, pack_end=False)
                     continue
+                elif nested_child.kind == "progressbar":
+                    core.build_progressbar(child, nested_child, cell_box, pack_end=False)
+                    continue
 
                 if nested_child.kind == "feature":
                     # Check if feature should be rendered based on 'if' condition
@@ -2137,6 +2460,8 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                             core.build_img(nested_child, sub, cell_box, pack_end=False)
                         elif sub.kind == "qrcode":
                             core.build_qrcode(nested_child, sub, cell_box, pack_end=False)
+                        elif sub.kind == "progressbar":
+                            core.build_progressbar(nested_child, sub, cell_box, pack_end=False)
                         elif sub.kind == "doc":
                             core.build_doc(nested_child, sub, cell_box, pack_end=False)
 
@@ -2183,6 +2508,8 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                             core.build_img(hg_child, sub, feat_box, pack_end=False)
                         elif sub.kind == "qrcode":
                             core.build_qrcode(hg_child, sub, feat_box, pack_end=False)
+                        elif sub.kind == "progressbar":
+                            core.build_progressbar(hg_child, sub, feat_box, pack_end=False)
                         elif sub.kind == "doc":
                             btn = core.build_doc(hg_child, sub, feat_box, pack_end=False)
                             if btn:
@@ -2216,6 +2543,8 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                     core.build_img(child, hg_child, cell_box, pack_end=False)
                 elif hg_child.kind == "qrcode":
                     core.build_qrcode(child, hg_child, cell_box, pack_end=False)
+                elif hg_child.kind == "progressbar":
+                    core.build_progressbar(child, hg_child, cell_box, pack_end=False)
 
             # Make cell focusable if it has controls
             if cell_controls:
@@ -2266,6 +2595,8 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                 core.build_img(child, sub, cell_box, pack_end=False)
             elif sub.kind == "qrcode":
                 core.build_qrcode(child, sub, cell_box, pack_end=False)
+            elif sub.kind == "progressbar":
+                core.build_progressbar(child, sub, cell_box, pack_end=False)
             elif sub.kind == "hgroup":
                 # Nested hgroup in feature - create vertical layout
                 nested_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
@@ -2324,6 +2655,10 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                 tog = core.build_toggle(child, sub, cell_box, pack_end=False)
                 tog.set_can_focus(True)
                 cell_controls.append(tog)
+            elif sub.kind == "switch":
+                switch = core.build_switch(child, sub, cell_box, pack_end=False)
+                switch.set_can_focus(True)
+                cell_controls.append(switch)
 
         # Add choice button if feature has choice children
         choices = [c for c in child.children if c.kind == "choice"]
@@ -2630,6 +2965,9 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
         elif kind == "qrcode":
             core.build_qrcode(feat, sub, row_box, pack_end=False)
 
+        elif kind == "progressbar":
+            core.build_progressbar(feat, sub, row_box, pack_end=False)
+
         elif kind == "doc":
             btn = core.build_doc(feat, sub, row_box, pack_end=False)
             if btn:
@@ -2665,6 +3003,10 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
         elif kind == "toggle":
             tog = core.build_toggle(feat, sub, row_box, pack_end=False)
             row._items.append(tog)
+
+        elif kind == "switch":
+            switch = core.build_switch(feat, sub, row_box, pack_end=False)
+            row._items.append(switch)
 
         elif kind == "tab":
             tab = core.build_tab(feat, sub, row_box, pack_end=False)

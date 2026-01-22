@@ -227,6 +227,29 @@ A switch that executes different commands for ON/OFF states.
 - `refresh`: Update interval in seconds (default: 0 = no refresh). Can be integer or float (e.g., `1`, `0.5`, `2.5`)
 - `align`: Toggle alignment - `left`, `center` (default), or `right`
 
+#### `<switch>` - Modern Switch Widget
+A modern switch widget (GtkSwitch) that executes different commands for ON/OFF states. Has the same functionality as `<toggle>` but with a different visual appearance.
+
+```xml
+<switch
+  value="${batocera-planemode status}"
+  action_on="batocera-planemode enable"
+  action_off="batocera-planemode disable" />
+```
+
+**Attributes:**
+- `value`: Command to get current state (returns "true"/"false", "1"/"0", "on"/"off", etc.)
+- `display`: Command to get display value (optional, shows as label if provided)
+- `action_on`: Command to execute when turning ON
+- `action_off`: Command to execute when turning OFF
+- `refresh`: Update interval in seconds (default: 0 = no refresh). Can be integer or float (e.g., `1`, `0.5`, `2.5`)
+- `align`: Switch alignment - `left`, `center` (default), or `right`
+
+**Notes:**
+- Identical functionality to `<toggle>` but uses a modern switch appearance
+- Better for binary on/off settings
+- Supports the same state detection as toggle (true/false, 1/0, on/off, yes/no, enabled/disabled)
+
 #### `<text>` - Display Text
 Shows static text or dynamic output from a command.
 
@@ -411,6 +434,37 @@ Generates and displays a QR code from text, URL, or command output. Requires the
 - QR codes are always square - if only width or height is specified, both dimensions will use that value
 - If neither width nor height is specified, defaults to 200x200 pixels
 - Useful for sharing URLs, WiFi credentials, or dynamic status information
+
+#### `<progressbar>` - Progress Bar Display
+Displays a progress bar with a numeric value below it. Shows progress as a visual bar and text value.
+
+```xml
+<!-- Static progress bar -->
+<progressbar display="75" min="0" max="100" />
+
+<!-- Dynamic progress bar from command -->
+<progressbar display="${df -h /userdata | awk 'NR==2 {print $5}' | sed 's/%//'}" min="0" max="100" refresh="5" />
+
+<!-- Battery level with custom range -->
+<progressbar display="${cat /sys/class/power_supply/BAT0/capacity}" min="0" max="100" refresh="10" />
+
+<!-- Temperature with custom range -->
+<progressbar display="${sensors | grep 'Core 0' | awk '{print $3}' | sed 's/+//;s/°C//'}" min="20" max="80" refresh="2" />
+```
+
+**Attributes:**
+- `display`: Static value or `${command}` that returns a numeric value
+- `min`: Minimum value for the progress bar range (optional, default: 0)
+- `max`: Maximum value for the progress bar range (optional, default: 100)
+- `refresh`: Update interval in seconds (default: 0 = no refresh). Can be integer or float (e.g., `1`, `0.5`, `2.5`)
+- `align`: Progress bar alignment - `left`, `center` (default), or `right`
+
+**Notes:**
+- Values are automatically clamped to the min/max range
+- If the command returns non-numeric text, the function tries to extract the first number found
+- The progress bar shows both a visual bar and the numeric value below it
+- Values are displayed as integers when whole numbers, or with one decimal place for fractals
+- Progress bar uses the same color scheme as other UI elements (blue gradient)
 
 #### `<doc>` - Document Viewer Button
 Creates a button that opens a fullscreen viewer for documents including PDFs, images, comic book archives (CBZ), and plain text files.

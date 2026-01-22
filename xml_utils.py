@@ -36,7 +36,7 @@ def validate_xml(root: CCElement) -> tuple[list[str], list[str]]:
     warnings: list[str] = []
 
     # Allowed tags
-    allowed_tags = {"features", "vgroup", "hgroup", "feature", "text", "button", "button_confirm", "toggle", "choice", "img", "qrcode", "doc", "tab"}
+    allowed_tags = {"features", "vgroup", "hgroup", "feature", "text", "button", "button_confirm", "toggle", "choice", "img", "qrcode", "doc", "tab", "progressbar", "switch"}
 
     # Requirements per tag (name optional everywhere now)
     required_per_tag = {
@@ -48,11 +48,13 @@ def validate_xml(root: CCElement) -> tuple[list[str], list[str]]:
         "button": {"action"}, # display optional, action required
         "button_confirm": {"display", "action"}, # display required (confirmation message), action required
         "toggle": set(),      # display and value both optional; action_on/off optional
+        "switch": set(),      # display and value both optional; action_on/off optional (same as toggle)
         "choice": {"display", "action"},  # runs 'action' when selected
         "img": set(),         # display optional (path, URL, or ${...} command)
         "qrcode": set(),      # display optional (text, URL, or ${...} command to encode as QR)
         "doc": {"display", "content"},  # display for button label, content for document path
         "tab": set(),         # display optional (tab label)
+        "progressbar": set(),     # display optional (value or ${...} command), min/max optional
     }
 
     # Known attributes by tag
@@ -66,11 +68,13 @@ def validate_xml(root: CCElement) -> tuple[list[str], list[str]]:
         "button": {"display", "action", "refresh", "align"},
         "button_confirm": {"display", "action", "refresh", "align"},
         "toggle": {"display", "value", "action_on", "action_off", "refresh", "align"},
+        "switch": {"display", "value", "action_on", "action_off", "refresh", "align"},
         "choice": {"display", "action"},
         "img": {"display", "width", "height", "refresh", "align"},
         "qrcode": {"display", "width", "height", "refresh", "align", "bg"},
         "doc": {"display", "content", "refresh"},
         "tab": {"display", "align", "target"},
+        "progressbar": {"display", "min", "max", "refresh", "align"},
     }
 
     def path_str(stack):
