@@ -18,9 +18,15 @@ from gi.repository import Gdk
 # Default to disable AT-SPI DBus chatter for performance/stability
 os.environ.setdefault("NO_AT_BRIDGE", "1")
 
-def normalize_bool_str(s: str) -> bool:
+def normalize_bool_str(s) -> bool:
     if s is None:
         return False
+    # Handle boolean input directly
+    if isinstance(s, bool):
+        return s
+    # Handle string input
+    if not isinstance(s, str):
+        s = str(s)
     s = s.strip().lower()
     return s in ("1", "true", "on", "yes", "enabled")
 

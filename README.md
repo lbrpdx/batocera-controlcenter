@@ -495,17 +495,17 @@ Creates a button that opens a fullscreen viewer for documents including PDFs, im
 **Supported formats:**
 - **PDF**: Requires `pdftoppm` and `pdfinfo` (usually pre-installed on Batocera)
   - Multi-page navigation with Previous/Next buttons
-  - Gamepad: Left/Right or A button to navigate, Up/Down to zoom in/out, Right analog stick to pan, B to close
+  - Gamepad: Left/Right or A button to navigate, Up/Down to zoom in/out, Right analog stick for continuous panning, B to close
 - **CBZ**: Comic Book Archive (ZIP file containing images)
   - Multi-page navigation with Previous/Next buttons
   - Images sorted naturally by filename
-  - Gamepad: Left/Right or A button to navigate, Up/Down to zoom in/out, Right analog stick to pan, B to close
+  - Gamepad: Left/Right or A button to navigate, Up/Down to zoom in/out, Right analog stick for continuous panning, B to close
 - **Images**: JPG, PNG, GIF, and other formats supported by GdkPixbuf
-  - Gamepad: Up/Down to zoom in/out, Right analog stick to pan, A or B button to close
+  - Gamepad: Up/Down to zoom in/out, Right analog stick for continuous panning, A or B button to close
 - **Text files**: TXT, LOG, MD, CONF, CFG, INI, JSON, XML, YAML, YML
   - Scrollable text view with monospace font
   - Font size controlled by CSS (`.doc-viewer-text` class)
-  - Gamepad: Up/Down to zoom in/out (font size), Right analog stick to pan/scroll, A or B button to close
+  - Gamepad: Up/Down to zoom in/out (font size), Right analog stick for continuous panning/scrolling, A or B button to close
 
 **Notes:**
 - Opens in fullscreen overlay window
@@ -518,6 +518,7 @@ Creates a button that opens a fullscreen viewer for documents including PDFs, im
   - Images/PDFs/CBZ: Zoom range 20% to 500%
   - Text files: Font size zoom for better readability
 - **Pan functionality**: Use right analog stick to pan around zoomed content
+  - **Continuous panning**: Hold the right analog stick in any direction for smooth, continuous scrolling
   - Works with all content types when zoomed in
   - Smooth scrolling for precise navigation
 
@@ -751,9 +752,35 @@ The interface uses GTK3 CSS for styling. All elements have CSS classes for custo
 
 The application uses evdev for gamepad support with exclusive access (prevents EmulationStation from receiving inputs while the control center is open).
 
-- **D-Pad/Left Stick**: Navigate
-- **A Button (South)**: Activate/Confirm
+#### Main Window Navigation
+- **D-Pad/Left Stick**: Navigate between controls
+  - Up/Down: Move between rows
+  - Left/Right: Move between controls in a row
+- **A Button (South)**: Activate/Confirm selected control
 - **B Button (East) / Start**: Close/Cancel
+- **L1/R1 (Page Up/Down)**: Switch between tabs (if tabs are present)
+
+Navigation in the main window uses single-action with debouncing for precise control.
+
+#### Document Viewer Controls (when viewing PDFs, images, text files)
+- **D-Pad/Left Stick Up/Down**: Zoom in/out
+  - **Continuous zoom**: Hold Up/Down for continuous zooming at medium speed (5 times per second)
+  - Images/PDFs/CBZ: Zoom range 20% to 500%
+  - Text files: Font size zoom for better readability
+- **D-Pad/Left Stick Left/Right**: Navigate pages (PDFs and CBZ files)
+  - **Continuous page turning**: Hold Left/Right for continuous page navigation at slower speed (3.3 times per second)
+- **Right Analog Stick**: Pan around zoomed content
+  - **Continuous panning**: Hold any direction for smooth, continuous scrolling at fast speed (10 times per second)
+  - Works with all content types when zoomed in
+- **A or B Button**: Close document viewer
+
+#### Continuous Actions (Document Viewer Only)
+Continuous actions are automatically enabled when viewing documents and disabled when returning to the main window:
+- **Panning** (Right analog stick): 100ms intervals (fast, 10 times per second)
+- **Zooming** (D-Pad/Left stick Up/Down): 200ms intervals (medium, 5 times per second)  
+- **Page turning** (D-Pad/Left stick Left/Right): 300ms intervals (slower, 3.3 times per second)
+
+Multiple continuous actions can run simultaneously (e.g., panning while zooming).
 
 Supported controllers: Xbox, PlayStation, and most standard gamepads.
 

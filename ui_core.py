@@ -20,7 +20,9 @@ import locale
 _ = locale.gettext
 
 # Activate for some verbose message on tricky parts of the code
-DEBUG = False
+DEBUG = os.environ.get('CONTROLCENTER_DEBUG', '').lower() in ('1', 'true', 'yes')
+ACTION_DEBOUNCE_MS = 100  # Faster response
+WINDOW_TITLE = "Batocera Control Center"
 
 # Optional evdev for gamepad
 try:
@@ -101,11 +103,10 @@ def register_element_id(element, rendered_ids: set[str], core=None):
             try:
                 should_show = evaluate_if_condition(condition, rendered_ids)
                 widget.set_visible(should_show)
-            except:
+                if DEBUG:
+                    print(f"[REGISTER] {condition} -> {should_show}, IDs={self.rendered_ids}")
+            except Exception as e:
                 pass
-
-ACTION_DEBOUNCE_MS = 100  # Faster response
-WINDOW_TITLE = "Batocera Control Center"
 
 def is_cmd(s: str) -> bool:
     s = (s or "").strip()
@@ -343,19 +344,13 @@ class UICore:
         def on_focus_out(_w, ev):
             # If we're about to show a dialog or have one open, ignore this focus-out
             if self._about_to_show_dialog or self._dialog_open:
-                if DEBUG:
-                    print(f"DEBUG: Dialog open or about to show, ignoring focus-out")
                 return False
 
             # Otherwise, close after a delay
             def check_and_close():
                 # Double-check that no dialog opened during the delay
                 if self._dialog_open:
-                    if DEBUG:
-                        print(f"DEBUG: Dialog opened during delay, not closing")
                     return False
-                if DEBUG:
-                    print(f"DEBUG: Focus lost, closing")
                 self.quit()
                 return False
 
@@ -630,6 +625,8 @@ class UICore:
         self.reset_inactivity_timer()  # Reset timer on button click
         self.start_refresh()
         self.set_tab_focus()
+        # Reset focus to first row to prevent discrepancy after timeout
+        _init_focus(self)
 
     def toogle_visibility(self, *_a):
         if self.window.is_visible():
@@ -663,12 +660,11 @@ class UICore:
         for widget, condition in self._conditional_widgets:
             try:
                 should_show = evaluate_if_condition(condition, self.rendered_ids)
-                if DEBUG:
-                    print(f"DEBUG: Conditional widget check: {condition} -> {should_show}, IDs: {self.rendered_ids}")
                 widget.set_visible(should_show)
-            except Exception as e:
                 if DEBUG:
-                    print(f"DEBUG: Error updating conditional widget: {e}")
+                        print(f"[START_REF] {condition} -> {should_show}, IDs={self.rendered_ids}")
+            except Exception as e:
+                pass
 
     def quit(self, *_a):
         if self.quit_mode == "hide":
@@ -708,9 +704,18 @@ class UICore:
         # give time to the user to release the hotkeys...
         n = 30
         while self._gamepads.can_get_input_focus() is False and n > 0:
-            print("please release hotkeys...")
+            if DEBUG:
+                print("please release hotkeys...")
             time.sleep(0.1)
             n = n-1
+
+    def enable_gamepad_continuous_actions(self):
+        """Enable continuous gamepad actions (for document viewer)"""
+        self._gamepads.enable_continuous_actions()
+
+    def disable_gamepad_continuous_actions(self):
+        """Disable continuous gamepad actions (for main window)"""
+        self._gamepads.disable_continuous_actions()
 
     def _handle_gamepad_action_main(self, action: str):
         """Handle gamepad actions - works for both main window and dialogs"""
@@ -741,6 +746,14 @@ class UICore:
             self.row_left()
         elif action == "axis_right":
             self.row_right()
+        elif action == "pan_up":
+            self.move_focus(-1)  # Right stick up = move focus up
+        elif action == "pan_down":
+            self.move_focus(+1)  # Right stick down = move focus down
+        elif action == "pan_left":
+            self.row_left()  # Right stick left = navigate left
+        elif action == "pan_right":
+            self.row_right()  # Right stick right = navigate right
         elif action == "next_tab":
             self.set_next_tab()
         elif action == "previous_tab":
@@ -799,7 +812,7 @@ class UICore:
                     should_show = evaluate_if_condition(condition, self.rendered_ids)
                     widget.set_visible(should_show)
                     if DEBUG:
-                        print(f"[COND] {condition} -> {should_show}, IDs={self.rendered_ids}")
+                        print(f"[RECOMPUTE] {condition} -> {should_show}, IDs={self.rendered_ids}")
                 except Exception:
                     pass
 
@@ -859,17 +872,22 @@ class UICore:
             def upd_expand(_l=lbl, _disp=disp, _sub=sub, _core=self):
                 result = expand_command_string(_disp)
                 result_stripped = result.strip()
+                element_id = (_sub.attrs.get("id", "") or "").strip()
+                
                 if result_stripped and result_stripped.lower() != "null":
                     _l.set_text(result)
                     _l.set_visible(True)
-                    register_element_id(_sub, _core.rendered_ids)
+                    # Only recompute if this element has an ID (affects conditionals)
+                    if element_id:
+                        register_element_id(_sub, _core.rendered_ids)
+                        _core._recompute_conditionals()
                 else:
                     _l.set_text("")
                     _l.set_visible(False)
-                    e_id = (_sub.attrs.get("id", "") or "").strip()
-                    if e_id and e_id in _core.rendered_ids:
-                        _core.rendered_ids.discard(e_id)
-                _core._recompute_conditionals()
+                    # Only recompute if this element had an ID that's being removed
+                    if element_id and element_id in _core.rendered_ids:
+                        _core.rendered_ids.discard(element_id)
+                        _core._recompute_conditionals()
 
             class ExpandRefreshTask:
                 def __init__(self, update_fn, interval_sec):
@@ -906,11 +924,18 @@ class UICore:
             # Initial evaluation
             def set_initial():
                 initial_value = expand_command_string(disp)
+                element_id = (sub.attrs.get("id", "") or "").strip()
+                
                 if is_empty_or_null(initial_value):
                     hide_and_unregister()
+                    # Only recompute if element had an ID
+                    if element_id:
+                        self._recompute_conditionals()
                 else:
                     show_and_register(initial_value)
-                self._recompute_conditionals()
+                    # Only recompute if element has an ID
+                    if element_id:
+                        self._recompute_conditionals()
                 return False
 
             GLib.idle_add(set_initial)
@@ -921,28 +946,40 @@ class UICore:
             # Initial evaluation
             def set_initial():
                 initial_val = run_shell_capture(c).strip()
+                element_id = (sub.attrs.get("id", "") or "").strip()
+                
                 if is_empty_or_null(initial_val):
                     hide_and_unregister()
+                    # Only recompute if element had an ID
+                    if element_id:
+                        self._recompute_conditionals()
                 else:
                     show_and_register(initial_val)
-                self._recompute_conditionals()
+                    # Only recompute if element has an ID
+                    if element_id:
+                        self._recompute_conditionals()
                 return False
 
             GLib.idle_add(set_initial)
 
             def upd(val: str, _l=lbl, _sub=sub, _core=self):
                 txt = (val or "").strip()
+                element_id = (_sub.attrs.get("id", "") or "").strip()
+                
                 if txt and txt.lower() != "null":
                     _l.set_text(txt)
                     _l.set_visible(True)
-                    register_element_id(_sub, _core.rendered_ids)
+                    # Only recompute if this element has an ID (affects conditionals)
+                    if element_id:
+                        register_element_id(_sub, _core.rendered_ids)
+                        _core._recompute_conditionals()
                 else:
                     _l.set_text("")
                     _l.set_visible(False)
-                    e_id = (_sub.attrs.get("id", "") or "").strip()
-                    if e_id and e_id in _core.rendered_ids:
-                        _core.rendered_ids.discard(e_id)
-                _core._recompute_conditionals()
+                    # Only recompute if this element had an ID that's being removed
+                    if element_id and element_id in _core.rendered_ids:
+                        _core.rendered_ids.discard(element_id)
+                        _core._recompute_conditionals()
 
             self.refreshers.append(RefreshTask(upd, c, refresh))
 
@@ -1138,7 +1175,7 @@ class UICore:
         last_state = [None]  # Use list to make it mutable in nested function
         switch_state = {"updating": False, "last_user_change": 0}
         
-        def update_switch_state(val: str):
+        def update_switch_state(val):
             """Update switch state based on command output"""
             try:
                 import time
@@ -1146,8 +1183,12 @@ class UICore:
                 if time.time() - switch_state["last_user_change"] < 1.0:
                     return
                 
-                normalized = normalize_bool_str(val)
-                is_on = normalized.lower() in ("true", "1", "on", "yes", "enabled", "enable")
+                # Handle both string and boolean values
+                if isinstance(val, bool):
+                    is_on = val
+                else:
+                    normalized = normalize_bool_str(val)
+                    is_on = normalized
                 
                 # Check if state actually changed to avoid unnecessary updates and blinking
                 if last_state[0] is not None and last_state[0] == is_on:
@@ -1398,6 +1439,8 @@ class UICore:
                     self._suspend_inactivity_timer = False
                     self._dialog_open = False
                     self._handle_gamepad_action = self._handle_gamepad_action_main
+                    # Disable continuous actions when returning to main window
+                    self.disable_gamepad_continuous_actions()
 
                 def docviewer_on_quit():
                     self.quit()
@@ -1405,6 +1448,8 @@ class UICore:
                 docviewer = DocViewer()
                 docviewer.open(self.window, file_path, docviewer_on_destroy, docviewer_on_quit)
                 self._handle_gamepad_action = docviewer.handle_gamepad_action
+                # Enable continuous actions for document viewer navigation
+                self.enable_gamepad_continuous_actions()
                 self._about_to_show_dialog = False
             except Exception as e:
                 self._dialog_open = False
@@ -1718,28 +1763,30 @@ class UICore:
 
             # Get initial value to check if we should render at all
             initial_val = run_shell_capture(c).strip()
+            element_id = (sub.attrs.get("id", "") or "").strip()
+            
             if not initial_val or initial_val.lower() == "null":
                 # Keep the widget hidden; allow later refresh to show it when valid
                 img.set_visible(False)
             else:
                 # Initial render is valid
-                register_element_id(sub, self.rendered_ids)
-                self._recompute_conditionals()
+                if element_id:
+                    register_element_id(sub, self.rendered_ids)
+                    self._recompute_conditionals()
                 update_qrcode(initial_val)
-
-            # Register ID immediately if we have valid initial data
-            register_element_id(sub, self.rendered_ids)
-            # Recompute conditionals (so labels depending on the command reflect state now)
-            self._recompute_conditionals()
 
             def upd(val: str, _img=img, _sub=sub, _core=self):
                 txt = (val or "").strip()
+                element_id = (_sub.attrs.get("id", "") or "").strip()
+                
                 if txt and txt.lower() != "null":
                     update_qrcode(txt)
-                    # Ensure ID is registered when content is present
-                    register_element_id(_sub, _core.rendered_ids)
-                    # Ensure widget is visible and recompute conditionals
-                    GLib.idle_add(lambda: (_img.set_visible(True), _core._recompute_conditionals(), False)[2])
+                    # Only recompute if this element has an ID (affects conditionals)
+                    if element_id:
+                        register_element_id(_sub, _core.rendered_ids)
+                        GLib.idle_add(lambda: (_img.set_visible(True), _core._recompute_conditionals(), False)[2])
+                    else:
+                        GLib.idle_add(lambda: (_img.set_visible(True), False)[1])
                 else:
                     # Clear, hide, and unregister ID when content disappears
                     def hide_and_unregister():
@@ -1748,10 +1795,10 @@ class UICore:
                         except:
                             pass
                         _img.set_visible(False)
-                        elem_id = _sub.attrs.get("id", "").strip()
-                        if elem_id and elem_id in _core.rendered_ids:
-                            _core.rendered_ids.discard(elem_id)
-                        _core._recompute_conditionals()
+                        # Only recompute if this element had an ID that's being removed
+                        if element_id and element_id in _core.rendered_ids:
+                            _core.rendered_ids.discard(element_id)
+                            _core._recompute_conditionals()
                         return False
                     GLib.idle_add(hide_and_unregister)
 
@@ -1897,31 +1944,38 @@ class UICore:
             
             # Get initial value to check if we should render at all
             initial_val = run_shell_capture(c).strip()
+            element_id = (sub.attrs.get("id", "") or "").strip()
+            
             if not initial_val or initial_val.lower() == "null":
                 # Keep the widget hidden; allow later refresh to show it when valid
                 container.set_visible(False)
             else:
                 # Initial render is valid
-                register_element_id(sub, self.rendered_ids)
-                self._recompute_conditionals()
+                if element_id:
+                    register_element_id(sub, self.rendered_ids)
+                    self._recompute_conditionals()
                 update_progress(initial_val)
             
             def upd(val: str, _container=container, _sub=sub, _core=self):
                 txt = (val or "").strip()
+                element_id = (_sub.attrs.get("id", "") or "").strip()
+                
                 if txt and txt.lower() != "null":
                     update_progress(txt)
-                    # Ensure ID is registered when content is present
-                    register_element_id(_sub, _core.rendered_ids)
-                    # Ensure widget is visible and recompute conditionals
-                    GLib.idle_add(lambda: (_container.set_visible(True), _core._recompute_conditionals(), False)[2])
+                    # Only recompute if this element has an ID (affects conditionals)
+                    if element_id:
+                        register_element_id(_sub, _core.rendered_ids)
+                        GLib.idle_add(lambda: (_container.set_visible(True), _core._recompute_conditionals(), False)[2])
+                    else:
+                        GLib.idle_add(lambda: (_container.set_visible(True), False)[1])
                 else:
                     # Hide and unregister ID when content disappears
                     def hide_and_unregister():
                         _container.set_visible(False)
-                        elem_id = _sub.attrs.get("id", "").strip()
-                        if elem_id and elem_id in _core.rendered_ids:
-                            _core.rendered_ids.discard(elem_id)
-                        _core._recompute_conditionals()
+                        # Only recompute if this element had an ID that's being removed
+                        if element_id and element_id in _core.rendered_ids:
+                            _core.rendered_ids.discard(element_id)
+                            _core._recompute_conditionals()
                         return False
                     GLib.idle_add(hide_and_unregister)
             
@@ -2281,8 +2335,11 @@ def ui_build_containers(core: UICore, xml_root):
 def _init_focus(core: UICore):
     if not core.focus_rows:
         return
+    
+    # Properly clear all highlights from all rows (including item-level highlights)
     for r in core.focus_rows:
-        core._row_set_focused(r, False)
+        core.unhighlight_row(r)
+    
     core.focus_index = 0
     first_row = core.focus_rows[0]
     core._row_set_focused(first_row, True)
@@ -3200,8 +3257,6 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
     def on_dialog_focus_out(*_):
         def check_and_close():
             if not dialog.is_active():
-                if DEBUG:
-                    print(f"DEBUG: Confirm dialog lost focus, closing everything")
                 core.quit()
             return False
         GLib.timeout_add(100, check_and_close)
@@ -3367,8 +3422,6 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
     def on_dialog_focus_out(*_):
         def check_and_close():
             if not dialog.is_active():
-                if DEBUG:
-                    print(f"DEBUG: Choice dialog lost focus, closing everything")
                 core.quit()
             return False
         GLib.timeout_add(100, check_and_close)

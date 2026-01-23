@@ -18,11 +18,18 @@ import threading
 
 from gi.repository import GLib
 
+# Debug flag - can be enabled by setting environment variable
+import os
+DEBUG = os.environ.get('CONTROLCENTER_DEBUG', '').lower() in ('1', 'true', 'yes')
+
 class GamePads:
     def __init__(self):
         self._gamepad_devices = []
         self._gamepad_thread = None
         self._can_get_input_focus = False
+        self._continuous_timers = {}  # Track multiple continuous actions
+        self._continuous_callbacks = {}  # Track callbacks for each action
+        self._continuous_actions_enabled = False  # Control when continuous actions are active
 
     def nb_devices(self):
         return len(self._gamepad_devices)
@@ -70,6 +77,68 @@ class GamePads:
 
     def stop_listen(self):
         self._gamepad_running = False
+        self._stop_all_continuous_actions()
+
+    def _start_continuous_action(self, action, callback):
+        """Start continuous action for the given action type"""
+        self._stop_continuous_action(action)  # Stop any existing action of this type
+        
+        # Send initial action immediately
+        GLib.idle_add(callback, action)
+        
+        # Determine interval based on action type
+        if action in ["pan_up", "pan_down", "pan_left", "pan_right"]:
+            interval = 100  # Fast panning (10 times per second)
+        elif action in ["axis_up", "axis_down"]:  # Zoom actions
+            interval = 200  # Medium zoom (5 times per second)
+        elif action in ["axis_left", "axis_right"]:  # Page turning
+            interval = 300  # Slower page turning (3.3 times per second)
+        else:
+            interval = 150  # Default interval
+        
+        # Start timer for continuous actions
+        timer_id = GLib.timeout_add(interval, self._continuous_action_tick, action, callback)
+        self._continuous_timers[action] = timer_id
+        self._continuous_callbacks[action] = callback
+
+    def _should_use_continuous_action(self, action_name):
+        """Check if continuous actions should be used based on current context"""
+        # Only use continuous actions when explicitly enabled (e.g., in document viewer)
+        # and for specific navigation actions
+        return action_name in ["joystick1up", "joystick1down", "joystick1left", "joystick1right",
+                               "joystick2up", "joystick2down", "joystick2left", "joystick2right",
+                               "up", "down", "left", "right"]
+
+    def enable_continuous_actions(self):
+        """Enable continuous actions (for document viewer)"""
+        self._continuous_actions_enabled = True
+
+    def disable_continuous_actions(self):
+        """Disable continuous actions (for main window navigation)"""
+        self._continuous_actions_enabled = False
+        self._stop_all_continuous_actions()  # Stop any ongoing continuous actions
+
+    def _continuous_action_tick(self, action, callback):
+        """Timer callback for continuous actions"""
+        if action in self._continuous_timers and callback:
+            GLib.idle_add(callback, action)
+            return True  # Continue timer
+        return False  # Stop timer
+
+    def _stop_continuous_action(self, action):
+        """Stop continuous action for a specific action type"""
+        if action in self._continuous_timers:
+            GLib.source_remove(self._continuous_timers[action])
+            del self._continuous_timers[action]
+        if action in self._continuous_callbacks:
+            del self._continuous_callbacks[action]
+
+    def _stop_all_continuous_actions(self):
+        """Stop all continuous actions"""
+        for timer_id in self._continuous_timers.values():
+            GLib.source_remove(timer_id)
+        self._continuous_timers.clear()
+        self._continuous_callbacks.clear()
 
     def can_get_input_focus(self):
         return self._can_get_input_focus
@@ -97,6 +166,7 @@ class GamePads:
 
     def stopThread(self):
         self.stop_listen()
+        self._stop_all_continuous_actions()  # Stop any ongoing continuous actions
         if self._gamepad_thread is not None:
             self._gamepad_thread.join()
             self._gamepad_thread = None
@@ -262,10 +332,12 @@ class GamePads:
         pads_configs = GamePads.load_es_dbpads()
         mappings = {}
         for dev in self._gamepad_devices:
-            mappings[dev.fd] = GamePads._find_best_controller_mapping(pads_configs, dev.name, dev.info.bustype, dev.info.vendor, dev.info.product, dev.info.version)
-
-        # get axis relaxed values
-        relaxValues = self.get_mapping_axis_relaxed_values(dev)
+            mapping = GamePads._find_best_controller_mapping(pads_configs, dev.name, dev.info.bustype, dev.info.vendor, dev.info.product, dev.info.version)
+            if mapping is None:
+                print(f"Warning: No mapping found for gamepad {dev.name}")
+                mappings[dev.fd] = {}  # Empty mapping to prevent errors
+            else:
+                mappings[dev.fd] = mapping
 
         # Track axis states to detect movement
         axis_states = {}
@@ -273,11 +345,15 @@ class GamePads:
         for dev in self._gamepad_devices:
             axis_states[dev.fd] = {}
             axis_infos[dev.fd]  = {}
+            
+            # get axis relaxed values for this specific device
+            relaxValues = self.get_mapping_axis_relaxed_values(dev)
+            
             if "axis" in mappings[dev.fd]:
                 for code in mappings[dev.fd]["axis"]:
                     abs_info = dev.absinfo(code)
                     center = (abs_info.max + abs_info.min) // 2
-                    if relaxValues[code]["centered"]:
+                    if code in relaxValues and relaxValues[code]["centered"]:
                         threshold = (abs_info.max - abs_info.min) // 4
                         bornemin = abs_info.min + threshold
                         bornemax = abs_info.max - threshold
@@ -285,7 +361,17 @@ class GamePads:
                         bornemin = abs_info.min -1 # can't reach it
                         bornemax = center
                     axis_infos[dev.fd][code] =  { "bornemin": bornemin, "bornemax": bornemax }
-                    axis_states[dev.fd][code] = abs_info.value # relaxed
+                    
+                    # Initialize axis state properly using the same logic as event handling
+                    current_value = abs_info.value
+                    initial_axis_value = 0
+                    if current_value < bornemin:
+                        initial_axis_value = -1
+                    elif current_value > bornemax:
+                        initial_axis_value = 1
+                    axis_states[dev.fd][code] = initial_axis_value
+            else:
+                pass
 
         # compute initial hotkeys pressed status
         # self._can_get_input_focus will be set to true only once hotkeys are released
@@ -321,7 +407,7 @@ class GamePads:
                 try:
                     for event in device.read():
                         if self._can_get_input_focus:
-                            self._handle_event(device, event, mappings[device.fd], axis_infos[device.fd], axis_states, actions, f_handle_gamepad_action)
+                            self._handle_event(device, event, mappings[device.fd], axis_infos, axis_states, actions, f_handle_gamepad_action)
                         else:
                             # grrr, still some hotkeys to release
                             if event.type == ecodes.EV_KEY and event.value == 0: # Button down
@@ -338,6 +424,10 @@ class GamePads:
                     print(f"Error reading event: {e}")
 
     def _handle_event(self, device, event, mapping, axis_infos, axis_states, actions, f_handle_gamepad_action):
+        # Safety check - ensure mapping exists
+        if not mapping:
+            return
+            
         if event.type == ecodes.EV_KEY:
             if event.value != 0:  # Button down
                 if "button" in mapping and event.code in mapping["button"] and event.value in mapping["button"][event.code]:
@@ -347,19 +437,89 @@ class GamePads:
             if event.code >= 16 and event.value != 0: # hat down
                 if "hat" in mapping and event.code in mapping["hat"] and event.value in mapping["hat"][event.code]:
                     if mapping["hat"][event.code][event.value] in actions:
-                        GLib.idle_add(f_handle_gamepad_action, actions[mapping["hat"][event.code][event.value]])
+                        action_name = mapping["hat"][event.code][event.value]
+                        action = actions[action_name]
+                        # Use continuous actions only when enabled (document viewer)
+                        if self._continuous_actions_enabled and self._should_use_continuous_action(action_name):
+                            self._start_continuous_action(action, f_handle_gamepad_action)
+                        else:
+                            # Single action for main window navigation or when continuous actions disabled
+                            GLib.idle_add(f_handle_gamepad_action, action)
+            elif event.code >= 16 and event.value == 0: # hat released
+                if "hat" in mapping and event.code in mapping["hat"]:
+                    # Stop continuous actions for this hat only when continuous actions are enabled
+                    if self._continuous_actions_enabled:
+                        for hat_value in mapping["hat"][event.code]:
+                            action_name = mapping["hat"][event.code][hat_value]
+                            if action_name in actions and self._should_use_continuous_action(action_name):
+                                action = actions[action_name]
+                                self._stop_continuous_action(action)
             else:
-                # axis
+                # axis - simplified logic similar to original
+                if DEBUG and event.code < 16:  # Only log non-hat axes
+                    print(f"DEBUG: Processing axis {event.code}, mapping has axis: {'axis' in mapping}")
+                    if "axis" in mapping:
+                        print(f"DEBUG: event.code {event.code} in mapping['axis']: {event.code in mapping['axis']}")
+                        print(f"DEBUG: mapping['axis'] keys: {list(mapping['axis'].keys())}")
+                
                 if "axis" in mapping and event.code in mapping["axis"]:
-                    axis_value = 0
-                    if event.value < axis_infos[event.code]["bornemin"]:
-                        axis_value = -1
-                    elif event.value > axis_infos[event.code]["bornemax"]:
-                        axis_value = 1
-                    else:
-                        axis_states[device.fd][event.code] = 0 # reset (relaxed required to reput)
-                    if axis_value != 0 and axis_states[device.fd][event.code] == 0: # previous state must be relaxed
+                    # Check if we have the required data structures
+                    if (device.fd in axis_states and event.code in axis_states[device.fd] and
+                        device.fd in axis_infos and event.code in axis_infos[device.fd]):
+                        
+                        old_axis_value = axis_states[device.fd][event.code]
+                        axis_value = 0
+                        
+                        # Determine new axis state
+                        if event.value < axis_infos[device.fd][event.code]["bornemin"]:
+                            axis_value = -1
+                        elif event.value > axis_infos[device.fd][event.code]["bornemax"]:
+                            axis_value = 1
+                        
+                        # Update axis state
                         axis_states[device.fd][event.code] = axis_value
-                        if axis_value in mapping["axis"][event.code]:
-                            if mapping["axis"][event.code][axis_value] in actions:
-                                GLib.idle_add(f_handle_gamepad_action, actions[mapping["axis"][event.code][axis_value]])
+                        
+                        # Handle axis activation (going from neutral to active)
+                        if axis_value != 0 and old_axis_value == 0:
+                            if axis_value in mapping["axis"][event.code]:
+                                action_name = mapping["axis"][event.code][axis_value]
+                                if action_name in actions:
+                                    action = actions[action_name]
+                                    
+                                    # Use continuous or single action based on context
+                                    if self._continuous_actions_enabled and self._should_use_continuous_action(action_name):
+                                        self._start_continuous_action(action, f_handle_gamepad_action)
+                                    else:
+                                        GLib.idle_add(f_handle_gamepad_action, action)
+                        
+                        # Handle axis release (going from active to neutral)
+                        elif axis_value == 0 and old_axis_value != 0:
+                            if old_axis_value in mapping["axis"][event.code]:
+                                action_name = mapping["axis"][event.code][old_axis_value]
+                                if action_name in actions:
+                                    action = actions[action_name]
+                                    
+                                    # Stop continuous action if it was running
+                                    if self._continuous_actions_enabled and self._should_use_continuous_action(action_name):
+                                        self._stop_continuous_action(action)
+                        
+                        # Handle axis direction change (from one direction to another)
+                        elif axis_value != 0 and old_axis_value != 0 and axis_value != old_axis_value:
+                            # Stop old action
+                            if old_axis_value in mapping["axis"][event.code]:
+                                old_action_name = mapping["axis"][event.code][old_axis_value]
+                                if old_action_name in actions:
+                                    old_action = actions[old_action_name]
+                                    if self._continuous_actions_enabled and self._should_use_continuous_action(old_action_name):
+                                        self._stop_continuous_action(old_action)
+                            
+                            # Start new action
+                            if axis_value in mapping["axis"][event.code]:
+                                action_name = mapping["axis"][event.code][axis_value]
+                                if action_name in actions:
+                                    action = actions[action_name]
+                                    
+                                    if self._continuous_actions_enabled and self._should_use_continuous_action(action_name):
+                                        self._start_continuous_action(action, f_handle_gamepad_action)
+                                    else:
+                                        GLib.idle_add(f_handle_gamepad_action, action)
