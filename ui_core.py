@@ -3449,7 +3449,7 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
                 dialog.destroy()
         elif action_key == "back":
             dialog.destroy()
-        elif action_key in ("axis_left", "axis_right"):
+        elif action_key in ("axis_left", "axis_right", "pan_left", "pan_right"):
             current_btn[0] = 1 - current_btn[0]  # Toggle between 0 and 1
             update_button_focus()
         return False
@@ -3597,10 +3597,10 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
                 choice_buttons[current_choice[0]].emit("clicked")
         elif action == "back":
             dialog.destroy()
-        elif action == "axis_up":
+        elif action in ("axis_up", "pan_up"):
             current_choice[0] = max(0, current_choice[0] - 1)
             update_choice_focus()
-        elif action == "axis_down":
+        elif action in ("axis_down", "pan_down"):
             current_choice[0] = min(len(choice_buttons) - 1, current_choice[0] + 1)
             update_choice_focus()
         return False
