@@ -354,12 +354,19 @@ class GamePads:
                     abs_info = dev.absinfo(code)
                     center = (abs_info.max + abs_info.min) // 2
                     if code in relaxValues and relaxValues[code]["centered"]:
-                        threshold = (abs_info.max - abs_info.min) // 4
+                        threshold = (abs_info.max - abs_info.min) // 4  # Original 25% deadzone
                         bornemin = abs_info.min + threshold
                         bornemax = abs_info.max - threshold
+                        if DEBUG:
+                            print(f"DEBUG: Axis {code} centered deadzone: {bornemin} to {bornemax} (threshold: {threshold}, range: {abs_info.min}-{abs_info.max})")
                     else:
-                        bornemin = abs_info.min -1 # can't reach it
-                        bornemax = center
+                        # For non-centered axes (like PS3 controller), use a proper deadzone around center
+                        # PS3 controller range is typically 0-255, center around 127-128
+                        threshold = (abs_info.max - abs_info.min) // 6  # Smaller deadzone for non-centered
+                        bornemin = center - threshold
+                        bornemax = center + threshold
+                        if DEBUG:
+                            print(f"DEBUG: Axis {code} non-centered deadzone: {bornemin} to {bornemax} (center: {center}, threshold: {threshold}, range: {abs_info.min}-{abs_info.max})")
                     axis_infos[dev.fd][code] =  { "bornemin": bornemin, "bornemax": bornemax }
                     
                     # Initialize axis state properly using the same logic as event handling
@@ -456,12 +463,6 @@ class GamePads:
                                 self._stop_continuous_action(action)
             else:
                 # axis - simplified logic similar to original
-                if DEBUG and event.code < 16:  # Only log non-hat axes
-                    print(f"DEBUG: Processing axis {event.code}, mapping has axis: {'axis' in mapping}")
-                    if "axis" in mapping:
-                        print(f"DEBUG: event.code {event.code} in mapping['axis']: {event.code in mapping['axis']}")
-                        print(f"DEBUG: mapping['axis'] keys: {list(mapping['axis'].keys())}")
-                
                 if "axis" in mapping and event.code in mapping["axis"]:
                     # Check if we have the required data structures
                     if (device.fd in axis_states and event.code in axis_states[device.fd] and
@@ -470,11 +471,18 @@ class GamePads:
                         old_axis_value = axis_states[device.fd][event.code]
                         axis_value = 0
                         
-                        # Determine new axis state
+                        # Determine new axis state with proper deadzone logic
                         if event.value < axis_infos[device.fd][event.code]["bornemin"]:
                             axis_value = -1
                         elif event.value > axis_infos[device.fd][event.code]["bornemax"]:
                             axis_value = 1
+                        else:
+                            axis_value = 0  # Within deadzone
+                        
+                        # Debug output for PS3 controller troubleshooting
+                        if DEBUG and axis_value != old_axis_value:
+                            print(f"DEBUG: Axis {event.code} changed from {old_axis_value} to {axis_value}")
+                            print(f"       Value: {event.value}, Range: {axis_infos[device.fd][event.code]['bornemin']} to {axis_infos[device.fd][event.code]['bornemax']}")
                         
                         # Update axis state
                         axis_states[device.fd][event.code] = axis_value

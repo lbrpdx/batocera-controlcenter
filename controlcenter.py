@@ -42,8 +42,21 @@ def gtk_init_check():
         return False
 
 def main():
+    import argparse
+    
     locale.bindtextdomain('controlcenter', None)
     locale.textdomain('controlcenter')
+
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Batocera Control Center')
+    parser.add_argument('--fullscreen', action='store_true', help='Run in fullscreen mode')
+    parser.add_argument('--window', metavar='WIDTHxHEIGHT', help='Set window size (e.g., 640x480)')
+    parser.add_argument('--hidden', action='store_true', help='Start hidden')
+    parser.add_argument('timeout', nargs='?', type=int, default=0, help='Auto-close timeout in seconds')
+    parser.add_argument('xml_file', nargs='?', help='XML configuration file')
+    parser.add_argument('css_file', nargs='?', help='CSS style file')
+    
+    args = parser.parse_args()
 
     # Will be set after app is created
     app_instance = [None]
@@ -95,33 +108,27 @@ def main():
     script_path = os.path.realpath(__file__)
     script_dir = os.path.dirname(script_path)
 
-    # Paths and parameters
-    xml_path = None
-    css_path = None
-    auto_close_seconds = 0  # 0 = never auto-close
-    hidden_at_startup = False
-
-    # Parse command line arguments - any numeric argument is the timeout
-    for arg in sys.argv[1:]:
-        if arg in ("-h", "--help"):
-            continue
-        if arg == "--hidden":
-            hidden_at_startup = True
-            continue
-        # Check if it's a number (timeout)
+    # Parse window size if provided
+    window_size = None
+    if args.window:
         try:
-            auto_close_seconds = int(arg)
-            continue
+            width_str, height_str = args.window.split('x')
+            width = int(width_str)
+            height = int(height_str)
+            if width > 0 and height > 0:
+                window_size = (width, height)
+            else:
+                sys.stderr.write(f"ERROR: Invalid window size: {args.window}. Width and height must be positive.\n")
+                sys.exit(1)
         except ValueError:
-            pass
-        # Check if it's an XML file
-        if arg.endswith('.xml') or xml_path is None:
-            if xml_path is None:
-                xml_path = arg
-        # Otherwise it's a CSS file
-        elif arg.endswith('.css') or css_path is None:
-            if css_path is None:
-                css_path = arg
+            sys.stderr.write(f"ERROR: Invalid window size format: {args.window}. Use WIDTHxHEIGHT (e.g., 640x480).\n")
+            sys.exit(1)
+
+    # Determine file paths
+    xml_path = args.xml_file
+    css_path = args.css_file
+    auto_close_seconds = args.timeout
+    hidden_at_startup = args.hidden
 
     # If no XML path specified, search in priority order
     if xml_path is None:
@@ -149,7 +156,8 @@ def main():
             sys.stderr.write(f" - {e}\n")
         sys.exit(2)
 
-    app = ControlCenterApp(xml_root, css_path, auto_close_seconds, hidden_at_startup)
+    app = ControlCenterApp(xml_root, css_path, auto_close_seconds, hidden_at_startup, 
+                          fullscreen=args.fullscreen, window_size=window_size)
     app_instance[0] = app  # Store for signal handler
     app.run()
 

@@ -41,14 +41,44 @@ This allows users to customize their configuration without modifying system file
 ## Command Line Parameters
 
 ```
-./controlcenter.py [xml_path] [css_path] [auto_close_seconds]
+./controlcenter.py [--fullscreen] [--window WIDTHxHEIGHT] [--hidden] [timeout] [xml_path] [css_path]
 ```
 
-- `xml_path`: Path to XML configuration file (default: auto-detected)
-- `css_path`: Path to CSS stylesheet (default: auto-detected)
-- `auto_close_seconds`: Inactivity timeout in seconds (default: 0 = never close)
+**Options:**
+- `--fullscreen`: Run in fullscreen mode (covers entire screen)
+- `--window WIDTHxHEIGHT`: Set custom window size (e.g., `--window 800x600`)
+- `--hidden`: Start with window hidden (useful for background processes)
+
+**Positional arguments:**
+- `timeout`: Inactivity timeout in seconds (default: 0 = never close)
   - Timer resets on any user interaction (navigation, button clicks)
   - Window also closes when losing focus (clicking outside)
+- `xml_path`: Path to XML configuration file (default: auto-detected)
+- `css_path`: Path to CSS stylesheet (default: auto-detected)
+
+**Examples:**
+```bash
+# Run in fullscreen mode
+./controlcenter.py --fullscreen
+
+# Run with custom window size
+./controlcenter.py --window 1024x768
+
+# Run fullscreen with 30-second timeout
+./controlcenter.py --fullscreen 30
+
+# Run with custom size and configuration files
+./controlcenter.py --window 800x600 config.xml style.css
+
+# Start hidden (can be shown later with SIGUSR1)
+./controlcenter.py --hidden
+```
+
+**Window Modes:**
+- **Default**: Responsive window size based on screen resolution (70-90% of screen width)
+- **Fullscreen**: Covers entire screen, removes window decorations
+- **Custom size**: Fixed dimensions, allows resizing for custom window sizes
+- **Hidden**: Window exists but is not visible (useful for daemon-like operation)
 
 ## XML Configuration
 
@@ -393,18 +423,24 @@ Shows an image from a file, URL, or command output.
 
 <!-- Dynamic image path from command -->
 <img display="${echo /path/to/image.png}" height="150" />
+
+<!-- Images with percentage dimensions -->
+<img display="/path/to/banner.jpg" width="50%" height="20%" />
+<img display="/path/to/logo.png" height="10%" />
 ```
 
 **Attributes:**
 - `display`: File path, URL, or `${command}` that returns a path
-- `width`: Image width in pixels (optional)
-- `height`: Image height in pixels (optional)
+- `width`: Image width in pixels or percentage (e.g., `100` or `50%`) (optional)
+- `height`: Image height in pixels or percentage (e.g., `150` or `20%`) (optional)
 - `refresh`: Update interval in seconds (default: 0 = no refresh). Can be integer or float (e.g., `1`, `0.5`, `2.5`)
 - `align`: Image alignment - `left`, `center` (default), or `right`
 
 **Notes:**
 - If only width or height is specified, aspect ratio is preserved
 - Supports common formats: PNG, JPEG, GIF, etc.
+- **Percentage dimensions**: Width/height can be specified as percentages (e.g., `width="50%"`) relative to the window size
+- Percentages are calculated based on actual window dimensions when available, with fallback to 800x600 reference
 
 #### `<qrcode>` - QR Code Display
 Generates and displays a QR code from text, URL, or command output. Requires the `qrcode` Python library (installed by default on Batocera).
@@ -418,12 +454,17 @@ Generates and displays a QR code from text, URL, or command output. Requires the
 
 <!-- Dynamic QR code from command -->
 <qrcode display="${echo https://example.com/status}" refresh="1" />
+
+<!-- QR codes with percentage dimensions -->
+<qrcode display="https://batocera.org" width="15%" />
+<qrcode display="${get_wifi_qr}" height="25%" />
+<qrcode display="WiFi:T:WPA;S:MyNetwork;P:password;;" width="20%" height="20%" />
 ```
 
 **Attributes:**
 - `display`: Text, URL, or `${command}` that returns data to encode as QR code
-- `width`: QR code width in pixels (optional, default: 200)
-- `height`: QR code height in pixels (optional, default: 200)
+- `width`: QR code width in pixels or percentage (e.g., `200` or `15%`) (optional, default: 200)
+- `height`: QR code height in pixels or percentage (e.g., `200` or `25%`) (optional, default: 200)
 - `refresh`: Update interval in seconds (default: 0 = no refresh). Can be integer or float (e.g., `1`, `0.5`, `2.5`)
 - `align`: QR code alignment - `left`, `center` (default), or `right`
 - `bg`: HTML hex code for the background of the QR code - foreground color will be contrasting white or black automatically
@@ -434,6 +475,8 @@ Generates and displays a QR code from text, URL, or command output. Requires the
 - QR codes are always square - if only width or height is specified, both dimensions will use that value
 - If neither width nor height is specified, defaults to 200x200 pixels
 - Useful for sharing URLs, WiFi credentials, or dynamic status information
+- **Percentage dimensions**: Width/height can be specified as percentages (e.g., `width="15%"`) relative to the window size
+- Percentages are calculated based on actual window dimensions when available, with fallback to 800x600 reference
 
 #### `<progressbar>` - Progress Bar Display
 Displays a progress bar with a numeric value below it. Shows progress as a visual bar and text value.

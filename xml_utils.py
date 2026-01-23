@@ -165,18 +165,28 @@ def validate_xml(root: CCElement) -> tuple[list[str], list[str]]:
             if act == "":
                 errors.append(f"[line {node.line}] <choice> requires non-empty 'action' at {path_str(stack[:-1])}")
 
-        # img and qrcode width/height must be positive integers if present
+        # img and qrcode width/height must be positive integers or percentages if present
         if node.kind in ("img", "qrcode"):
             for attr in ["width", "height"]:
                 if attr in node.attrs:
                     val = (node.attrs.get(attr) or "").strip()
                     if val:
-                        try:
-                            v = int(val)
-                            if v <= 0:
-                                errors.append(f"[line {node.line}] {attr} must be > 0 on <img> at {path_str(stack[:-1])}")
-                        except Exception:
-                            errors.append(f"[line {node.line}] {attr} must be an integer on <img> at {path_str(stack[:-1])}")
+                        # Check if it's a percentage
+                        if val.endswith('%'):
+                            try:
+                                percentage = float(val[:-1])
+                                if percentage <= 0:
+                                    errors.append(f"[line {node.line}] {attr} percentage must be > 0 on <{node.kind}> at {path_str(stack[:-1])}")
+                            except ValueError:
+                                errors.append(f"[line {node.line}] {attr} must be a valid percentage (e.g., '20%') on <{node.kind}> at {path_str(stack[:-1])}")
+                        else:
+                            # Check if it's an integer
+                            try:
+                                v = int(val)
+                                if v <= 0:
+                                    errors.append(f"[line {node.line}] {attr} must be > 0 on <{node.kind}> at {path_str(stack[:-1])}")
+                            except ValueError:
+                                errors.append(f"[line {node.line}] {attr} must be an integer or percentage (e.g., '200' or '20%') on <{node.kind}> at {path_str(stack[:-1])}")
 
         # vgroup can contain any child elements - no restrictions for flexibility
 

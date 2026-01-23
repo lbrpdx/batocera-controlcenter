@@ -149,8 +149,10 @@ def _activate_widget(widget: Gtk.Widget):
             pass
 
 class UICore:
-    def __init__(self, css_path: str):
+    def __init__(self, css_path: str, fullscreen: bool = False, window_size: tuple[int, int] | None = None):
         self.css_path = css_path
+        self.fullscreen = fullscreen
+        self.window_size = window_size
         self.window: Gtk.Window | None = None
         self.focus_rows: list[Gtk.EventBox] = []
         self.focus_index: int = 0
@@ -191,21 +193,34 @@ class UICore:
         win.set_name("popup-root")
 
         x0, y0, sw, sh = get_primary_geometry()
-        width, max_height = sw, sh
-        # small screens vs full size (>= 1280 x 720)
-        scale_class = "small"
-        if sw >= 1280:
-            width = int(sw * 0.90)
+        
+        # Handle fullscreen mode
+        if self.fullscreen:
+            width, max_height = sw, sh
             scale_class = "full"
-        if sw >= 1920:
-            width = int(sw * 0.70)
-            scale_class = "full"
-        if sh >= 720:
-            max_height = int(sh * 0.95)
-            scale_class = "full"
-        if sh >= 1080:
-            max_height = int(sh * 0.80)
-            scale_class = "full"
+            win.set_decorated(False)  # Remove window decorations for fullscreen
+        # Handle custom window size
+        elif self.window_size:
+            width, max_height = self.window_size
+            scale_class = "full" if width >= 1280 and max_height >= 720 else "small"
+        else:
+            # Default sizing logic
+            width, max_height = sw, sh
+            # small screens vs full size (>= 1280 x 720)
+            scale_class = "small"
+            if sw >= 1280:
+                width = int(sw * 0.90)
+                scale_class = "full"
+            if sw >= 1920:
+                width = int(sw * 0.70)
+                scale_class = "full"
+            if sh >= 720:
+                max_height = int(sh * 0.95)
+                scale_class = "full"
+            if sh >= 1080:
+                max_height = int(sh * 0.80)
+                scale_class = "full"
+        
         win.get_style_context().add_class(f"scale-{scale_class}")
 
         # Store dimensions for positioning
@@ -222,11 +237,21 @@ class UICore:
 
         # Set geometry hints for both X11 and Wayland - defer to avoid blocking
         def set_geometry_hints():
-            geom = Gdk.Geometry()
-            geom.min_width = width
-            geom.max_width = width
-            geom.max_height = max_height
-            win.set_geometry_hints(None, geom, Gdk.WindowHints.MIN_SIZE | Gdk.WindowHints.MAX_SIZE)
+            if not self.fullscreen:  # Don't set geometry hints for fullscreen
+                geom = Gdk.Geometry()
+                if self.window_size:
+                    # Custom window size - allow resizing
+                    geom.min_width = min(640, width)  # Minimum reasonable size
+                    geom.min_height = min(480, max_height)
+                    # Don't set max constraints for custom sizes
+                else:
+                    # Default behavior - fixed size
+                    geom.min_width = width
+                    geom.max_width = width
+                    geom.max_height = max_height
+                    win.set_geometry_hints(None, geom, Gdk.WindowHints.MIN_SIZE | Gdk.WindowHints.MAX_SIZE)
+                    return False
+                win.set_geometry_hints(None, geom, Gdk.WindowHints.MIN_SIZE)
             return False
         
         # Defer geometry hints to avoid blocking window creation
@@ -236,8 +261,16 @@ class UICore:
         self._is_wayland = is_wayland
 
         def on_realize(_w):
-            # On X11, position immediately after realize
-            if not is_wayland:
+            # Handle fullscreen mode
+            if self.fullscreen:
+                if is_wayland:
+                    # For Wayland, we'll handle fullscreen in the sway_commands
+                    pass
+                else:
+                    # For X11, use GTK fullscreen
+                    win.fullscreen()
+            # On X11, position immediately after realize (non-fullscreen)
+            elif not is_wayland:
                 center_x = self._screen_x + (self._screen_width - self._window_width) // 2
                 if self._screen_height - self._max_height > 10:
                     top_y = self._screen_y + 10
@@ -291,24 +324,29 @@ class UICore:
 
                     # Manipulate the window to make it visible
                     try:
-                        # Make it floating
-                        subprocess.run(['swaymsg', f'[app_id="{app_id}"]', 'floating', 'enable'],
-                                     capture_output=True, timeout=1)
+                        if self.fullscreen:
+                            # For fullscreen mode on Wayland
+                            subprocess.run(['swaymsg', f'[app_id="{app_id}"]', 'fullscreen', 'enable'],
+                                         capture_output=True, timeout=1)
+                        else:
+                            # Make it floating
+                            subprocess.run(['swaymsg', f'[app_id="{app_id}"]', 'floating', 'enable'],
+                                         capture_output=True, timeout=1)
 
-                        # Remove decorations (border)
-                        subprocess.run(['swaymsg', f'[app_id="{app_id}"]', 'border', 'none'],
-                                     capture_output=True, timeout=1)
+                            # Remove decorations (border)
+                            subprocess.run(['swaymsg', f'[app_id="{app_id}"]', 'border', 'none'],
+                                         capture_output=True, timeout=1)
 
-                        # Briefly fullscreen to force visibility, then restore
-                        subprocess.run(['swaymsg', f'[app_id="{app_id}"]', 'fullscreen', 'enable'],
-                                     capture_output=True, timeout=1)
-                        time.sleep(0.05)
-                        subprocess.run(['swaymsg', f'[app_id="{app_id}"]', 'fullscreen', 'disable'],
-                                     capture_output=True, timeout=1)
+                            # Briefly fullscreen to force visibility, then restore
+                            subprocess.run(['swaymsg', f'[app_id="{app_id}"]', 'fullscreen', 'enable'],
+                                         capture_output=True, timeout=1)
+                            time.sleep(0.05)
+                            subprocess.run(['swaymsg', f'[app_id="{app_id}"]', 'fullscreen', 'disable'],
+                                         capture_output=True, timeout=1)
 
-                        # Center the window (Sway config can override this if it has positioning rules)
-                        subprocess.run(['swaymsg', f'[app_id="{app_id}"]', 'move', 'position', 'center'],
-                                     capture_output=True, timeout=1)
+                            # Center the window (Sway config can override this if it has positioning rules)
+                            subprocess.run(['swaymsg', f'[app_id="{app_id}"]', 'move', 'position', 'center'],
+                                         capture_output=True, timeout=1)
 
                         # Focus the window
                         subprocess.run(['swaymsg', f'[app_id="{app_id}"]', 'focus'],
@@ -702,7 +740,7 @@ class UICore:
         GLib.timeout_add(50, start_gamepad_delayed)
 
         # give time to the user to release the hotkeys...
-        n = 30
+        n = 20
         while self._gamepads.can_get_input_focus() is False and n > 0:
             if DEBUG:
                 print("please release hotkeys...")
@@ -1543,9 +1581,38 @@ class UICore:
         height = sub.attrs.get("height", "")
         refresh = float(sub.attrs.get("refresh", parent_feat.attrs.get("refresh", DEFAULT_REFRESH_SEC)))
 
-        # Parse width/height
-        target_width = int(width) if width else None
-        target_height = int(height) if height else None
+        # Parse width/height - handle both pixels and percentages
+        def parse_dimension(value: str, reference_size: int = 100) -> int | None:
+            """Parse dimension value, supporting both pixels and percentages"""
+            if not value:
+                return None
+            
+            value = value.strip()
+            if value.endswith('%'):
+                # Parse percentage
+                try:
+                    percentage = float(value[:-1])
+                    return int(reference_size * percentage / 100)
+                except ValueError:
+                    return None
+            else:
+                # Parse pixels
+                try:
+                    return int(value)
+                except ValueError:
+                    return None
+        
+        # Use actual window dimensions if available, otherwise use reasonable defaults
+        if hasattr(self, '_window_width') and hasattr(self, '_max_height'):
+            reference_width = self._window_width
+            reference_height = self._max_height
+        else:
+            # Fallback to reasonable defaults
+            reference_width = 800
+            reference_height = 600
+        
+        target_width = parse_dimension(width, reference_width)
+        target_height = parse_dimension(height, reference_height)
 
         img = Gtk.Image()
 
@@ -1654,17 +1721,50 @@ class UICore:
         height = sub.attrs.get("height", "")
         refresh = float(sub.attrs.get("refresh", parent_feat.attrs.get("refresh", DEFAULT_REFRESH_SEC)))
 
+        # Parse width/height - handle both pixels and percentages
+        def parse_dimension(value: str, reference_size: int = 100) -> int | None:
+            """Parse dimension value, supporting both pixels and percentages"""
+            if not value:
+                return None
+            
+            value = value.strip()
+            if value.endswith('%'):
+                # Parse percentage
+                try:
+                    percentage = float(value[:-1])
+                    return int(reference_size * percentage / 100)
+                except ValueError:
+                    return None
+            else:
+                # Parse pixels
+                try:
+                    return int(value)
+                except ValueError:
+                    return None
+        
+        # Use actual window dimensions if available, otherwise use reasonable defaults
+        if hasattr(self, '_window_width') and hasattr(self, '_max_height'):
+            reference_width = self._window_width
+            reference_height = self._max_height
+        else:
+            # Fallback to reasonable defaults
+            reference_width = 800
+            reference_height = 600
+
         # Parse width/height - QR codes are square, so if only one dimension is specified, use it for both
         # If neither is specified, default to 160x160
-        if width and height:
-            target_width = int(width)
-            target_height = int(height)
-        elif width:
-            target_width = int(width)
-            target_height = int(width)  # Square
-        elif height:
-            target_width = int(height)  # Square
-            target_height = int(height)
+        parsed_width = parse_dimension(width, reference_width)
+        parsed_height = parse_dimension(height, reference_height)
+        
+        if parsed_width and parsed_height:
+            target_width = parsed_width
+            target_height = parsed_height
+        elif parsed_width:
+            target_width = parsed_width
+            target_height = parsed_width  # Square
+        elif parsed_height:
+            target_width = parsed_height  # Square
+            target_height = parsed_height
         else:
             target_width = 160
             target_height = 160
@@ -3575,8 +3675,9 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
 
 # ---- Application wrapper ----
 class ControlCenterApp:
-    def __init__(self, xml_root, css_path: str, auto_close_seconds: int = 0, hidden_at_startup = False):
-        self.core = UICore(css_path)
+    def __init__(self, xml_root, css_path: str, auto_close_seconds: int = 0, hidden_at_startup = False, 
+                 fullscreen: bool = False, window_size: tuple[int, int] | None = None):
+        self.core = UICore(css_path, fullscreen, window_size)
         self.auto_close_seconds = auto_close_seconds
         self.core._inactivity_timeout_seconds = auto_close_seconds
         self.hidden_at_startup = hidden_at_startup
