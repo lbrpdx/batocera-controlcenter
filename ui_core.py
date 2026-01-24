@@ -121,8 +121,11 @@ def is_empty_or_null(s: str) -> bool:
     return s == "" or s.lower() == "null"
 
 def _focus_widget(widget: Gtk.Widget):
+    # Don't use grab_focus() as it conflicts with touchscreen behavior
+    # Just add the CSS classes for visual focus
     try:
-        widget.grab_focus()
+        ctx = widget.get_style_context()
+        ctx.add_class("focused-cell")
     except Exception:
         pass
 
@@ -365,9 +368,17 @@ class UICore:
             except Exception as e:
                 print(f"grab_focus failed: {e}")
 
-            # Focus first row
+            # Focus first row - use CSS classes instead of grab_focus
             if self.focus_rows:
-                GLib.timeout_add(10, lambda: (self.focus_rows[0].grab_focus(), False)[1])
+                def set_initial_focus():
+                    try:
+                        first_row = self.focus_rows[0]
+                        ctx = first_row.get_style_context()
+                        ctx.add_class("focused-cell")
+                    except Exception:
+                        pass
+                    return False
+                GLib.timeout_add(10, set_initial_focus)
 
         # Track if we have an open dialog to prevent closing on dialog focus
         self._dialog_open = False
@@ -375,6 +386,8 @@ class UICore:
         self._suspend_inactivity_timer = False
         # Track if dialog allows inactivity timeout (choice popups allow it, document/confirm don't)
         self._dialog_allows_timeout = False
+        # Track current dialog for cleanup on timeout
+        self._current_dialog = None
 
         # Track when we're about to show a dialog (set by button callbacks)
         self._about_to_show_dialog = False
@@ -705,6 +718,14 @@ class UICore:
                 pass
 
     def quit(self, *_a):
+        # If there are open dialogs, destroy them first
+        if hasattr(self, '_current_dialog') and self._current_dialog:
+            try:
+                self._current_dialog.destroy()
+            except Exception:
+                pass
+            self._current_dialog = None
+        
         if self.quit_mode == "hide":
             self.hide()
 
@@ -2405,9 +2426,10 @@ def ui_build_containers(core: UICore, xml_root):
             # Activate it (this will trigger the existing toggled handler to show content)
             # Block re-entrancy safety is handled in make_switch_handler
             first_tab.set_active(True)
-            # Also set keyboard focus on the tab row itself
+            # Also set keyboard focus on the tab row itself - use CSS classes
             try:
-                first_tab.grab_focus()
+                ctx = first_tab.get_style_context()
+                ctx.add_class("focused-cell")
             except Exception:
                 pass
 
@@ -3341,6 +3363,9 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
 
     # Use Gtk.Window instead of Gtk.Dialog to avoid action area issues
     dialog = Gtk.Window()
+    
+    # Track this dialog so it can be destroyed on timeout
+    core._current_dialog = dialog
     dialog.set_transient_for(core.window)
     dialog.set_modal(True)
     if core._scale_class == "small":
@@ -3427,7 +3452,7 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
             if i == current_btn[0]:
                 ctx.add_class("focused-cell")
                 ctx.add_class("choice-selected")
-                btn.grab_focus()
+                # Don't use grab_focus() - conflicts with touchscreen
             else:
                 ctx.remove_class("focused-cell")
                 ctx.remove_class("choice-selected")
@@ -3491,6 +3516,9 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
 
     # Connect destroy handler to clean up
     def on_dialog_destroy(*_):
+        # Clear the dialog reference
+        if hasattr(core, '_current_dialog') and core._current_dialog == dialog:
+            core._current_dialog = None
         # Restore original handler
         core._handle_gamepad_action = original_handler
         core._dialog_open = False  # Allow main window to close again
@@ -3506,6 +3534,9 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
     core._dialog_allows_timeout = True  # Allow inactivity timer to close window
     # Use Gtk.Window instead of Gtk.Dialog to avoid action area issues
     dialog = Gtk.Window()
+    
+    # Track this dialog so it can be destroyed on timeout
+    core._current_dialog = dialog
     dialog.set_transient_for(core.window)
     dialog.set_modal(True)
     if core._scale_class == "small":
@@ -3568,7 +3599,7 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
     scrolled.add(choice_box)
 
     choice_buttons = []
-    current_choice = [0]
+    current_choice = [0]  # Always start with first choice
 
     def on_choice_selected(action: str):
         import threading
@@ -3579,13 +3610,16 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
     def update_choice_focus():
         for i, btn in enumerate(choice_buttons):
             ctx = btn.get_style_context()
-            if i == current_choice[0]:
-                ctx.add_class("focused-cell")
-                ctx.add_class("choice-selected")  # Additional class for choice highlighting
-                btn.grab_focus()
-            else:
-                ctx.remove_class("focused-cell")
-                ctx.remove_class("choice-selected")
+            # First, remove all focus-related classes from all buttons
+            ctx.remove_class("focused-cell")
+            ctx.remove_class("choice-selected")
+            
+        # Then add the classes only to the selected button
+        if 0 <= current_choice[0] < len(choice_buttons):
+            selected_btn = choice_buttons[current_choice[0]]
+            selected_ctx = selected_btn.get_style_context()
+            selected_ctx.add_class("focused-cell")
+            selected_ctx.add_class("choice-selected")
 
     # Override core's gamepad handler temporarily for dialog navigation
     original_handler = core._handle_gamepad_action
@@ -3649,8 +3683,9 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
 
     dialog.show_all()
 
-    # Apply initial focus after dialog is shown
+    # Apply initial focus after dialog is shown - always start with first choice
     if choice_buttons:
+        current_choice[0] = 0  # Explicitly reset to first choice
         GLib.idle_add(update_choice_focus)
 
     # On Wayland, remove dialog decorations
@@ -3671,6 +3706,9 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
 
     # Connect destroy handler to clean up
     def on_dialog_destroy(*_):
+        # Clear the dialog reference
+        if hasattr(core, '_current_dialog') and core._current_dialog == dialog:
+            core._current_dialog = None
         # Restore original handler
         core._handle_gamepad_action = original_handler
         core._dialog_open = False  # Allow main window to close again
