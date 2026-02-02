@@ -760,14 +760,6 @@ class UICore:
         # Start gamepad after window is shown
         GLib.timeout_add(50, start_gamepad_delayed)
 
-        # give time to the user to release the hotkeys...
-        n = 20
-        while self._gamepads.can_get_input_focus() is False and n > 0:
-            if DEBUG:
-                print("please release hotkeys...")
-            time.sleep(0.1)
-            n = n-1
-
     def enable_gamepad_continuous_actions(self):
         """Enable continuous gamepad actions (for document viewer)"""
         self._gamepads.enable_continuous_actions()

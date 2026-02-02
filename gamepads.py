@@ -26,7 +26,6 @@ class GamePads:
     def __init__(self):
         self._gamepad_devices = []
         self._gamepad_thread = None
-        self._can_get_input_focus = False
         self._continuous_timers = {}  # Track multiple continuous actions
         self._continuous_callbacks = {}  # Track callbacks for each action
         self._continuous_actions_enabled = False  # Control when continuous actions are active
@@ -140,9 +139,6 @@ class GamePads:
         self._continuous_timers.clear()
         self._continuous_callbacks.clear()
 
-    def can_get_input_focus(self):
-        return self._can_get_input_focus
-
     def startThread(self, handle_gamepad_action):
         def evdev_loop():
             print("begin thread: evdev")
@@ -150,7 +146,6 @@ class GamePads:
                 self.open_devices()
                 if self.nb_devices() == 0:
                     print("No gamepad devices found via evdev")
-                    self._can_get_input_focus = True
                     return
                 self.listen(handle_gamepad_action)
             except Exception as e:
@@ -160,7 +155,6 @@ class GamePads:
             print("end thread: evdev")
 
         # Store the thread so we can track it
-        self._can_get_input_focus = False # not allowed until keys are checked
         self._gamepad_thread = threading.Thread(target=evdev_loop, daemon=True)
         self._gamepad_thread.start()
 
@@ -377,23 +371,9 @@ class GamePads:
             else:
                 pass
 
-        # compute initial hotkeys pressed status
-        # self._can_get_input_focus will be set to true only once hotkeys are released
-        active_hotkeys = {}
-        for dev in self._gamepad_devices:
-            active_keys = dev.active_keys()
-            for key in active_keys:
-                if "button" in mappings[dev.fd] and key in mappings[dev.fd]["button"] and 1 in mappings[dev.fd]["button"][key]:
-                    if mappings[dev.fd]["button"][key][1] == "hotkey":
-                        if dev.fd not in active_hotkeys:
-                            active_hotkeys[dev.fd] = {}
-                        active_hotkeys[dev.fd][key] = []
-
         # focus require that hotkeys down are received by underlaying apply
         # to not cause issue (retroarch for example think that hotkey remains down, then right alone forwards)
-        self._can_get_input_focus = len(active_hotkeys) == 0
-        if self._can_get_input_focus:
-            self._grab_devices()
+        self._grab_devices()
         self._gamepad_running = True
 
         while self._gamepad_running:
@@ -410,19 +390,7 @@ class GamePads:
             for device in r:
                 try:
                     for event in device.read():
-                        if self._can_get_input_focus:
-                            self._handle_event(device, event, mappings[device.fd], axis_infos, axis_states, actions, f_handle_gamepad_action)
-                        else:
-                            # grrr, still some hotkeys to release
-                            if event.type == ecodes.EV_KEY and event.value == 0: # Button down
-                                if device.fd in active_hotkeys and event.code in active_hotkeys[device.fd]:
-                                    del active_hotkeys[device.fd][event.code]
-                                    if len(active_hotkeys[device.fd]) == 0:
-                                        del active_hotkeys[device.fd]
-                                        if len(active_hotkeys) == 0: # maybe no more hotkeys ?
-                                            self._can_get_input_focus = True
-                                            print("hotkeys released !")
-                                            self._grab_devices() # finally grab devices
+                        self._handle_event(device, event, mappings[device.fd], axis_infos, axis_states, actions, f_handle_gamepad_action)
 
                 except Exception as e:
                     print(f"Error reading event: {e}")
