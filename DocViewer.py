@@ -161,7 +161,20 @@ class DocViewer:
         zoom_level = [1.0]  # Current zoom level (1.0 = 100%)
         original_pixbuf = [None]  # Store original pixbuf for images/PDFs
         original_font_size = [14]  # Store original font size for text
-        
+        border_size = [0]
+
+        def apply_initial_zoom():
+            if original_pixbuf[0]:
+                zoom_level[0] = get_initial_zoom(original_pixbuf[0], parent_window.get_screen())
+                apply_zoom()
+
+        def get_initial_zoom(pixbuf, screen):
+            if pixbuf:
+                zoomX = screen.get_width() / pixbuf.get_width()
+                zoomY = (screen.get_height()-border_size[0]) / pixbuf.get_height()
+                return min(zoomX, zoomY)
+            return 1.0
+
         def apply_zoom():
             """Apply current zoom level to the active content"""
             if (is_image or is_pdf or is_cbz) and original_pixbuf[0]:
@@ -255,6 +268,8 @@ class DocViewer:
                 close_btn.get_style_context().add_class("cc-button")
                 close_btn.connect("clicked", close_viewer)
                 button_box.pack_start(close_btn, False, False, 0)
+                x, psize = button_box.get_preferred_size()
+                border_size[0] = psize.height+10*2 # border
     
                 # Gamepad navigation for images
                 def img_gamepad_handler(action: str):
@@ -388,6 +403,8 @@ class DocViewer:
                 close_btn.get_style_context().add_class("cc-button")
                 close_btn.connect("clicked", close_viewer)
                 button_box.pack_start(close_btn, False, False, 20)
+                x, psize = button_box.get_preferred_size()
+                border_size[0] = psize.height+10*2+20*2 # border/padding
     
                 # Render first page
                 render_page(1)
@@ -524,6 +541,8 @@ class DocViewer:
                 close_btn.get_style_context().add_class("cc-button")
                 close_btn.connect("clicked", close_viewer)
                 button_box.pack_start(close_btn, False, False, 20)
+                x, psize = button_box.get_preferred_size()
+                border_size[0] = psize.height+10*2+20*2 # border/padding
     
                 # Render first page
                 render_page(0)
@@ -594,6 +613,8 @@ class DocViewer:
                 close_btn.get_style_context().add_class("cc-button")
                 close_btn.connect("clicked", close_viewer)
                 button_box.pack_start(close_btn, False, False, 0)
+                x, psize = button_box.get_preferred_size()
+                border_size[0] = psize.height+10*2 # border
                 
                 # Gamepad navigation for text files
                 def text_gamepad_handler(action: str):
@@ -633,5 +654,6 @@ class DocViewer:
                     pass
             f_on_destroy()
 
+        apply_initial_zoom()
         viewer.connect("destroy", on_destroy)
         viewer.show_all()
