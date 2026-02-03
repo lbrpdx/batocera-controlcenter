@@ -34,6 +34,27 @@ except Exception:
 from refresh import RefreshTask, DEFAULT_REFRESH_SEC, Debouncer
 from shell import run_shell_capture, normalize_bool_str, get_primary_geometry, expand_command_string
 
+def handle_afterclick(core: 'UICore', afterclick_attr: str):
+    """Handle afterclick attribute - execute command or special action after main action"""
+    if not afterclick_attr or not afterclick_attr.strip():
+        return
+    
+    afterclick = afterclick_attr.strip()
+    
+    if afterclick == "bcc_close":
+        # Special case: hide BCC window (keep app running in background)
+        # Don't clear any focus - let GTK handle it naturally
+        if DEBUG:
+            print("DEBUG: Hiding window for bcc_close")
+        core.hide()
+    elif afterclick.startswith("${") and afterclick.endswith("}"):
+        # Command substitution - execute the command
+        cmd = afterclick[2:-1]  # Remove ${ and }
+        threading.Thread(target=lambda: run_shell_capture(cmd), daemon=True).start()
+    else:
+        # Direct command
+        threading.Thread(target=lambda: run_shell_capture(afterclick), daemon=True).start()
+
 def evaluate_if_condition(condition: str, rendered_ids: set[str]) -> bool:
     """
     Evaluate an 'if' condition to determine if an element should be rendered.
@@ -121,13 +142,9 @@ def is_empty_or_null(s: str) -> bool:
     return s == "" or s.lower() == "null"
 
 def _focus_widget(widget: Gtk.Widget):
-    # Don't use grab_focus() as it conflicts with touchscreen behavior
-    # Just add the CSS classes for visual focus
-    try:
-        ctx = widget.get_style_context()
-        ctx.add_class("focused-cell")
-    except Exception:
-        pass
+    # Temporarily disable focus to avoid conflicts with touchscreen
+    # Just do nothing for now
+    pass
 
 def _activate_widget(widget: Gtk.Widget):
     if isinstance(widget, Gtk.Button):
@@ -137,7 +154,11 @@ def _activate_widget(widget: Gtk.Widget):
             pass
     elif isinstance(widget, Gtk.ToggleButton):
         try:
-            widget.set_active(not widget.get_active())
+            # For tabs, always activate (don't toggle)
+            if hasattr(widget, '_tab_target'):
+                widget.set_active(True)
+            else:
+                widget.set_active(not widget.get_active())
         except Exception:
             pass
     elif isinstance(widget, Gtk.Switch):
@@ -168,6 +189,11 @@ class UICore:
         self._conditional_widgets = []  # Track widgets with !id() conditions for dynamic updates
         self.quit_mode = "hide" # versus close
         self._handle_gamepad_action = self._handle_gamepad_action_main
+        self._tab_switching_in_progress = False  # Prevent recursive tab switching
+        
+        # Global focus management
+        self._all_focusable_widgets = set()  # Track all widgets that can receive focus
+        self._currently_focused_widget = None
 
     # ---- Window / CSS ----
     def build_window(self):
@@ -368,17 +394,17 @@ class UICore:
             except Exception as e:
                 print(f"grab_focus failed: {e}")
 
-            # Focus first row - use CSS classes instead of grab_focus
-            if self.focus_rows:
-                def set_initial_focus():
-                    try:
-                        first_row = self.focus_rows[0]
-                        ctx = first_row.get_style_context()
-                        ctx.add_class("focused-cell")
-                    except Exception:
-                        pass
-                    return False
-                GLib.timeout_add(10, set_initial_focus)
+            # Focus first row - temporarily disabled to avoid conflicts
+            # if self.focus_rows:
+            #     def set_initial_focus():
+            #         try:
+            #             first_row = self.focus_rows[0]
+            #             ctx = first_row.get_style_context()
+            #             ctx.add_class("focused-cell")
+            #         except Exception:
+            #             pass
+            #         return False
+            #     GLib.timeout_add(10, set_initial_focus)
 
         # Track if we have an open dialog to prevent closing on dialog focus
         self._dialog_open = False
@@ -386,8 +412,9 @@ class UICore:
         self._suspend_inactivity_timer = False
         # Track if dialog allows inactivity timeout (choice popups allow it, document/confirm don't)
         self._dialog_allows_timeout = False
-        # Track current dialog for cleanup on timeout
-        self._current_dialog = None
+        # Track startup time to ignore initial gamepad input
+        self._startup_time = time.time()
+        self._startup_ignore_duration = 0.3  # Ignore gamepad input for 300ms after startup
 
         # Track when we're about to show a dialog (set by button callbacks)
         self._about_to_show_dialog = False
@@ -501,6 +528,11 @@ class UICore:
     def move_focus(self, delta: int):
         if not self.focus_rows:
             return
+        
+        # Skip if controller navigation is suppressed (due to recent touch sync)
+        if hasattr(self, '_suppress_controller_navigation') and self._suppress_controller_navigation:
+            return
+            
         self.reset_inactivity_timer()  # Reset timer on navigation
         old = self.focus_index
         self.focus_index = (self.focus_index + delta) % len(self.focus_rows)
@@ -514,22 +546,453 @@ class UICore:
 
         # If new row has items (buttons), select the first one and highlight it
         if hasattr(new_row, "_items") and new_row._items:
+            # Skip if controller focus is suppressed (due to recent touch sync)
+            if hasattr(self, '_suppress_controller_focus') and self._suppress_controller_focus:
+                return
+                
             if not hasattr(new_row, "_item_index"):
                 new_row._item_index = 0
             item = new_row._items[new_row._item_index]
             # Apply highlight classes
-            ctx = item.get_style_context()
-            ctx.add_class("focused-cell")
-            ctx.add_class("choice-selected")
+            self.apply_focus_classes_if_allowed(item)
             _focus_widget(item)
 
         # Apply vgroup cell highlight on new row (trigger focus-in to apply highlights properly)
         try:
             if hasattr(new_row, "_cells") and new_row._cells:
-                # Let the focus-in handler apply the highlights
-                pass
+                # Skip if controller focus is suppressed (due to recent touch sync)
+                if hasattr(self, '_suppress_controller_focus') and self._suppress_controller_focus:
+                    return
+                    
+                # Initialize cell navigation for this row
+                if not hasattr(new_row, "_cell_index"):
+                    new_row._cell_index = 0
+                # Apply cell-based highlighting
+                self._apply_cell_highlight(new_row)
         except Exception:
             pass
+        
+        # Auto-scroll to keep focused element visible (with delay for layout)
+        def delayed_scroll():
+            self.scroll_to_focused_widget()
+            return False
+        GLib.timeout_add(10, delayed_scroll)
+
+    def _apply_cell_highlight(self, row):
+        """Apply highlighting to the current cell control in a row"""
+        if not hasattr(row, "_cells") or not row._cells:
+            return
+        
+        # Skip if controller focus is suppressed (due to recent touch sync)
+        if hasattr(self, '_suppress_controller_focus') and self._suppress_controller_focus:
+            return
+        
+        cell_index = getattr(row, "_cell_index", 0)
+        if cell_index >= len(row._cells):
+            cell_index = 0
+            row._cell_index = cell_index
+            
+        cell_ev, controls = row._cells[cell_index]
+        if controls:
+            ctrl_idx = getattr(cell_ev, "_control_index", 0)
+            if ctrl_idx >= len(controls):
+                ctrl_idx = 0
+                cell_ev._control_index = ctrl_idx
+                
+            # Apply highlighting to the current control
+            ctrl = controls[ctrl_idx]
+            if self.apply_focus_classes_if_allowed(ctrl):
+                _focus_widget(ctrl)
+                # Auto-scroll to keep focused element visible (with delay)
+                def delayed_scroll():
+                    self.scroll_to_focused_widget()
+                    return False
+                GLib.timeout_add(10, delayed_scroll)
+
+    def scroll_to_focused_widget(self):
+        """Automatically scroll to keep the focused widget visible"""
+        try:
+            if DEBUG:
+                print("DEBUG: scroll_to_focused_widget called")
+                
+            if not self.focus_rows or self.focus_index >= len(self.focus_rows):
+                if DEBUG:
+                    print("DEBUG: No focus rows or invalid focus index")
+                return
+                
+            focused_row = self.focus_rows[self.focus_index]
+            focused_widget = None
+            
+            # Determine which widget is currently focused
+            if hasattr(focused_row, "_items") and focused_row._items:
+                item_index = getattr(focused_row, "_item_index", 0)
+                if 0 <= item_index < len(focused_row._items):
+                    focused_widget = focused_row._items[item_index]
+                    if DEBUG:
+                        print(f"DEBUG: Found focused item widget: {type(focused_widget).__name__}")
+            elif hasattr(focused_row, "_cells") and focused_row._cells:
+                cell_index = getattr(focused_row, "_cell_index", 0)
+                if 0 <= cell_index < len(focused_row._cells):
+                    cell_ev, controls = focused_row._cells[cell_index]
+                    ctrl_index = getattr(cell_ev, "_control_index", 0)
+                    if 0 <= ctrl_index < len(controls):
+                        focused_widget = controls[ctrl_index]
+                        if DEBUG:
+                            print(f"DEBUG: Found focused cell widget: {type(focused_widget).__name__}")
+            else:
+                # Use the row itself if no specific widget
+                focused_widget = focused_row
+                if DEBUG:
+                    print(f"DEBUG: Using focused row: {type(focused_widget).__name__}")
+            
+            if focused_widget and hasattr(self, '_scrolled_window'):
+                if DEBUG:
+                    print(f"DEBUG: Calling _scroll_widget_into_view for {type(focused_widget).__name__}")
+                self._scroll_widget_into_view(focused_widget, self._scrolled_window)
+            else:
+                if DEBUG:
+                    print(f"DEBUG: Missing requirements - widget: {focused_widget is not None}, scrolled: {hasattr(self, '_scrolled_window')}")
+                
+        except Exception as e:
+            if DEBUG:
+                print(f"DEBUG: Error in scroll_to_focused_widget: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _scroll_widget_into_view(self, widget, scrolled_window):
+        """Scroll the widget into view within the scrolled window"""
+        try:
+            if DEBUG:
+                print(f"DEBUG: _scroll_widget_into_view called for {type(widget).__name__}")
+            
+            # Make sure the widget is realized and has a window
+            if not widget.get_realized():
+                if DEBUG:
+                    print("DEBUG: Widget not realized, realizing now")
+                widget.realize()
+            
+            # Get the widget's allocation
+            widget_alloc = widget.get_allocation()
+            if DEBUG:
+                print(f"DEBUG: Widget allocation: {widget_alloc.x}, {widget_alloc.y}, {widget_alloc.width}x{widget_alloc.height}")
+            
+            # Get the scrolled window's viewport
+            viewport = None
+            scrolled_child = scrolled_window.get_child()
+            if scrolled_child and hasattr(scrolled_child, 'get_child'):
+                # If there's a viewport, get its child
+                viewport = scrolled_child
+                content = scrolled_child.get_child()
+            else:
+                content = scrolled_child
+            
+            if not content:
+                if DEBUG:
+                    print("DEBUG: No content found in scrolled window")
+                return
+            
+            if DEBUG:
+                print(f"DEBUG: Content widget: {type(content).__name__}")
+                if viewport:
+                    print(f"DEBUG: Viewport widget: {type(viewport).__name__}")
+            
+            # Try a different approach - use the widget's position relative to its toplevel
+            toplevel = widget.get_toplevel()
+            if not toplevel:
+                if DEBUG:
+                    print("DEBUG: No toplevel found")
+                return
+            
+            # Get widget position relative to toplevel
+            try:
+                widget_x, widget_y = widget.translate_coordinates(toplevel, 0, 0)
+                if DEBUG:
+                    print(f"DEBUG: Widget position in toplevel: {widget_x}, {widget_y}")
+            except Exception as e:
+                if DEBUG:
+                    print(f"DEBUG: Failed to translate widget coordinates to toplevel: {e}")
+                return
+            
+            # Get scrolled window position relative to toplevel
+            try:
+                scroll_x, scroll_y = scrolled_window.translate_coordinates(toplevel, 0, 0)
+                if DEBUG:
+                    print(f"DEBUG: Scrolled window position in toplevel: {scroll_x}, {scroll_y}")
+            except Exception as e:
+                if DEBUG:
+                    print(f"DEBUG: Failed to translate scrolled window coordinates to toplevel: {e}")
+                return
+            
+            # Calculate relative position
+            relative_y = widget_y - scroll_y
+            
+            if DEBUG:
+                print(f"DEBUG: Relative Y position: {relative_y}")
+            
+            # Get scrolled window dimensions and current position
+            scrolled_alloc = scrolled_window.get_allocation()
+            vadjustment = scrolled_window.get_vadjustment()
+            current_scroll = vadjustment.get_value()
+            
+            if DEBUG:
+                print(f"DEBUG: Scrolled window: {scrolled_alloc.width}x{scrolled_alloc.height}")
+                print(f"DEBUG: Current scroll position: {current_scroll}")
+                print(f"DEBUG: Adjustment range: {vadjustment.get_lower()} to {vadjustment.get_upper()}")
+                print(f"DEBUG: Page size: {vadjustment.get_page_size()}")
+            
+            # Calculate visible area (relative to scrolled window)
+            visible_top = current_scroll
+            visible_bottom = current_scroll + scrolled_alloc.height
+            
+            # Calculate widget bounds (we need to adjust for current scroll position)
+            widget_top = relative_y + current_scroll
+            widget_bottom = widget_top + widget_alloc.height
+            
+            if DEBUG:
+                print(f"DEBUG: Visible area: {visible_top} to {visible_bottom}")
+                print(f"DEBUG: Widget bounds: {widget_top} to {widget_bottom}")
+            
+            # Add padding
+            padding = min(40, max(10, scrolled_alloc.height // 20))
+            
+            # Determine if we need to scroll
+            new_scroll = None
+            
+            if widget_top < visible_top + padding:
+                # Widget is above visible area, scroll up
+                new_scroll = max(vadjustment.get_lower(), widget_top - padding)
+                if DEBUG:
+                    print(f"DEBUG: Widget above visible area, scrolling up to {new_scroll}")
+            elif widget_bottom > visible_bottom - padding:
+                # Widget is below visible area, scroll down
+                max_scroll = vadjustment.get_upper() - vadjustment.get_page_size()
+                new_scroll = min(max_scroll, widget_bottom - scrolled_alloc.height + padding)
+                if DEBUG:
+                    print(f"DEBUG: Widget below visible area, scrolling down to {new_scroll}")
+            else:
+                if DEBUG:
+                    print("DEBUG: Widget is already visible, no scroll needed")
+            
+            # Apply the scroll if needed
+            if new_scroll is not None and abs(new_scroll - current_scroll) > 1:
+                if DEBUG:
+                    print(f"DEBUG: Applying scroll from {current_scroll} to {new_scroll}")
+                # Use immediate scroll for debugging
+                vadjustment.set_value(new_scroll)
+                if DEBUG:
+                    print(f"DEBUG: Scroll applied, new value: {vadjustment.get_value()}")
+            elif new_scroll is not None:
+                if DEBUG:
+                    print(f"DEBUG: Scroll distance too small ({abs(new_scroll - current_scroll)}), skipping")
+                
+        except Exception as e:
+            if DEBUG:
+                print(f"DEBUG: Error in _scroll_widget_into_view: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _smooth_scroll_to(self, adjustment, target_value):
+        """Smoothly scroll to the target value"""
+        try:
+            current_value = adjustment.get_value()
+            distance = target_value - current_value
+            
+            # If distance is small, just jump there
+            if abs(distance) < 10:
+                adjustment.set_value(target_value)
+                return
+            
+            # Smooth scroll animation
+            steps = 8
+            step_size = distance / steps
+            step_count = [0]  # Use list to allow modification in nested function
+            
+            def scroll_step():
+                step_count[0] += 1
+                if step_count[0] >= steps:
+                    adjustment.set_value(target_value)
+                    return False
+                else:
+                    new_value = current_value + (step_size * step_count[0])
+                    adjustment.set_value(new_value)
+                    return True
+            
+            GLib.timeout_add(16, scroll_step)  # ~60fps
+            
+        except Exception as e:
+            if DEBUG:
+                print(f"DEBUG: Error in _smooth_scroll_to: {e}")
+            # Fallback to immediate scroll
+            adjustment.set_value(target_value)
+
+    def sync_focus_to_widget(self, target_widget):
+        """Synchronize controller focus to a specific widget that was touched/clicked"""
+        if not self.focus_rows:
+            return
+            
+        # Set flag to prevent recursive focus applications
+        if hasattr(self, '_syncing_focus') and self._syncing_focus:
+            return
+        self._syncing_focus = True
+        
+        try:
+            # Find which row and item/cell contains this widget FIRST
+            target_row_idx = None
+            target_item_idx = None
+            target_cell_idx = None
+            target_ctrl_idx = None
+            
+            for row_idx, row in enumerate(self.focus_rows):
+                # Check if widget is in row._items (row-based navigation)
+                if hasattr(row, '_items') and row._items:
+                    for item_idx, item in enumerate(row._items):
+                        if item == target_widget:
+                            target_row_idx = row_idx
+                            target_item_idx = item_idx
+                            break
+                
+                # Check if widget is in row._cells (cell-based navigation)
+                if hasattr(row, '_cells') and row._cells:
+                    for cell_idx, (cell_ev, controls) in enumerate(row._cells):
+                        for ctrl_idx, ctrl in enumerate(controls):
+                            if ctrl == target_widget:
+                                target_row_idx = row_idx
+                                target_cell_idx = cell_idx
+                                target_ctrl_idx = ctrl_idx
+                                break
+                
+                if target_row_idx is not None:
+                    break
+            
+            if target_row_idx is None:
+                return
+            
+            # Update focus indices
+            self.focus_index = target_row_idx
+            target_row = self.focus_rows[target_row_idx]
+            
+            if target_item_idx is not None:
+                # Row-based navigation
+                target_row._item_index = target_item_idx
+                self._row_set_focused(target_row, True)
+                
+            elif target_cell_idx is not None:
+                # Cell-based navigation
+                target_row._cell_index = target_cell_idx
+                cell_ev = target_row._cells[target_cell_idx][0]
+                cell_ev._control_index = target_ctrl_idx
+                self._row_set_focused(target_row, True)
+            
+            # Auto-scroll to keep focused element visible after sync (with delay)
+            def delayed_scroll():
+                self.scroll_to_focused_widget()
+                return False
+            GLib.timeout_add(10, delayed_scroll)
+        
+        finally:
+            self._syncing_focus = False
+            # Temporarily suppress controller navigation after touch sync
+            self._suppress_controller_navigation = True
+            def re_enable_controller():
+                self._suppress_controller_navigation = False
+                return False
+            GLib.timeout_add(1000, re_enable_controller)  # 1 second suppression
+
+    def register_focusable_widget(self, widget):
+        """Register a widget as focusable for global focus management"""
+        self._all_focusable_widgets.add(widget)
+
+    def clear_widget_focus_completely(self, widget):
+        """Completely clear focus from a widget by removing and re-adding all classes"""
+        try:
+            ctx = widget.get_style_context()
+            
+            # Get all current classes
+            all_classes = list(ctx.list_classes())
+            
+            # Remove ALL classes
+            for cls in all_classes:
+                ctx.remove_class(cls)
+            
+            # Force a redraw with no classes
+            widget.queue_draw()
+            
+            # Re-add all classes EXCEPT focus classes
+            for cls in all_classes:
+                if cls not in ['focused-cell', 'choice-selected']:
+                    ctx.add_class(cls)
+            
+            # Force another redraw
+            widget.queue_draw()
+            
+        except Exception as e:
+            pass
+
+    def enforce_single_focus(self, target_widget):
+        """Ensure only the target widget has focus classes - DISABLED"""
+        # This function is disabled as it was causing issues
+        pass
+
+    def apply_focus_classes_if_allowed(self, widget, debug_name=""):
+        """Apply focus classes to widget"""
+        try:
+            ctx = widget.get_style_context()
+            ctx.add_class("focused-cell")
+            ctx.add_class("choice-selected")
+            widget.queue_draw()
+        except Exception as e:
+            pass
+        return True
+
+    def clear_all_focus_highlights(self):
+        """Clear focus highlights from ALL widgets in the focus system"""
+        try:
+            for row in self.focus_rows:
+                # Clear highlights from row items
+                if hasattr(row, "_items") and row._items:
+                    for item in row._items:
+                        try:
+                            ctx = item.get_style_context()
+                            ctx.remove_class("focused-cell")
+                            ctx.remove_class("choice-selected")
+                            # Force style invalidation
+                            ctx.invalidate()
+                            # Force visual update
+                            item.queue_draw()
+                        except:
+                            pass
+                
+                # Clear highlights from row cells
+                if hasattr(row, "_cells") and row._cells:
+                    for cell_ev, controls in row._cells:
+                        try:
+                            cell_ev.get_style_context().remove_class("focused-cell")
+                            cell_ev.get_style_context().invalidate()
+                            cell_ev.queue_draw()
+                            for ctrl in controls:
+                                ctx = ctrl.get_style_context()
+                                ctx.remove_class("focused-cell")
+                                ctx.remove_class("choice-selected")
+                                ctx.invalidate()
+                                ctrl.queue_draw()
+                        except:
+                            pass
+        except:
+            pass
+
+    def add_touch_sync_to_widget(self, widget):
+        """DISABLED - Add touchscreen synchronization to a widget"""
+        # Temporarily disable touch sync to isolate the double highlight issue
+        return
+
+    def make_synced_click_handler(self, original_handler, widget):
+        """Create a click handler that syncs focus before executing the original handler"""
+        def synced_handler(*args):
+            # Sync controller focus to the clicked widget
+            self.sync_focus_to_widget(widget)
+            # Execute the original handler
+            return original_handler(*args)
+        return synced_handler
 
     def activate_current(self):
         if not self.focus_rows:
@@ -579,6 +1042,10 @@ class UICore:
         if not row:
             return
 
+        # Skip if controller navigation is suppressed (due to recent touch sync)
+        if hasattr(self, '_suppress_controller_navigation') and self._suppress_controller_navigation:
+            return
+
         # If row has items, navigate and activate
         if hasattr(row, "_items") and row._items:
             item_index = getattr(row, "_item_index", 0)
@@ -588,6 +1055,8 @@ class UICore:
                 old_ctx = old_item.get_style_context()
                 old_ctx.remove_class("focused-cell")
                 old_ctx.remove_class("choice-selected")
+                old_ctx.invalidate()
+                old_item.queue_draw()
 
                 # Move to new item
                 # first find the first visible
@@ -604,10 +1073,13 @@ class UICore:
                 item = row._items[row._item_index]
 
                 # Highlight new item
-                ctx = item.get_style_context()
-                ctx.add_class("focused-cell")
-                ctx.add_class("choice-selected")
-                _focus_widget(item)
+                if self.apply_focus_classes_if_allowed(item):
+                    _focus_widget(item)
+                    # Auto-scroll to keep focused element visible (with delay)
+                    def delayed_scroll():
+                        self.scroll_to_focused_widget()
+                        return False
+                    GLib.timeout_add(10, delayed_scroll)
         else:
             cb = getattr(row, "_on_left", None)
             if callable(cb):
@@ -616,6 +1088,10 @@ class UICore:
     def row_right(self):
         row = self.focus_rows[self.focus_index] if self.focus_rows else None
         if not row:
+            return
+
+        # Skip if controller navigation is suppressed (due to recent touch sync)
+        if hasattr(self, '_suppress_controller_navigation') and self._suppress_controller_navigation:
             return
 
         # If row has items, navigate and activate
@@ -627,6 +1103,8 @@ class UICore:
                 old_ctx = old_item.get_style_context()
                 old_ctx.remove_class("focused-cell")
                 old_ctx.remove_class("choice-selected")
+                old_ctx.invalidate()
+                old_item.queue_draw()
 
                 # Move to new item
                 # first find the first visible
@@ -643,10 +1121,13 @@ class UICore:
                 item = row._items[row._item_index]
 
                 # Highlight new item
-                ctx = item.get_style_context()
-                ctx.add_class("focused-cell")
-                ctx.add_class("choice-selected")
-                _focus_widget(item)
+                if self.apply_focus_classes_if_allowed(item):
+                    _focus_widget(item)
+                    # Auto-scroll to keep focused element visible (with delay)
+                    def delayed_scroll():
+                        self.scroll_to_focused_widget()
+                        return False
+                    GLib.timeout_add(10, delayed_scroll)
         else:
             cb = getattr(row, "_on_right", None)
             if callable(cb):
@@ -686,13 +1167,30 @@ class UICore:
             self.show()
 
     def set_tab_focus(self):
-        if len(self.window._tab_row._tabs) == 0:
+        if not hasattr(self.window, '_tab_row') or not self.window._tab_row or len(self.window._tab_row._tabs) == 0:
             return
-        n = 0
-        while n < len(self.window._tab_row._tabs) and not self.window._tab_row._tabs[n].is_visible():
-            n = n+1
-        if n < len(self.window._tab_row._tabs):
-            self.window._tab_row._tabs[n].set_active(True)
+        
+        # Check if there's already an active and visible tab
+        active_tab = None
+        for tab in self.window._tab_row._tabs:
+            if tab.get_active() and tab.is_visible():
+                active_tab = tab
+                break
+        
+        # If no active visible tab, find first visible tab and activate it
+        if not active_tab:
+            for i, tab in enumerate(self.window._tab_row._tabs):
+                if tab.is_visible():
+                    if DEBUG:
+                        print(f"DEBUG: set_tab_focus activating first visible tab: {tab.get_label()}")
+                    tab.set_active(True)
+                    # IMPORTANT: Update the _item_index to point to this tab
+                    if hasattr(self.window._tab_row, '_items') and tab in self.window._tab_row._items:
+                        tab_index = self.window._tab_row._items.index(tab)
+                        self.window._tab_row._item_index = tab_index
+                        if DEBUG:
+                            print(f"DEBUG: Updated _item_index to {tab_index} for tab {tab.get_label()}")
+                    break
 
     def stop_refresh(self):
         for r in self.refreshers:
@@ -770,6 +1268,14 @@ class UICore:
 
     def _handle_gamepad_action_main(self, action: str):
         """Handle gamepad actions - works for both main window and dialogs"""
+        
+        # Ignore gamepad input for a short period after startup to avoid issues
+        # with buttons that were used to launch the application
+        if hasattr(self, '_startup_time'):
+            elapsed = time.time() - self._startup_time
+            if elapsed < self._startup_ignore_duration:
+                return
+        
         # Reset inactivity timer on any gamepad action
         try:
             self.reset_inactivity_timer()
@@ -845,27 +1351,107 @@ class UICore:
                 pass
             self._inactivity_timer_id = None
 
-    def make_action_cb(self, action: str, key: str):
+    def make_action_cb(self, action: str, key: str, afterclick: str = ""):
         def cb(_w=None):
             act = (action or "").strip()
             if not act:
                 return
             if self.debouncer.allow(key):
                 self.reset_inactivity_timer()  # Reset timer on button click
-                threading.Thread(target=lambda: run_shell_capture(act), daemon=True).start()
+                
+                def run_action_with_afterclick():
+                    # Run the main action first
+                    run_shell_capture(act)
+                    # Then run the afterclick if specified
+                    if afterclick:
+                        handle_afterclick(self, afterclick)
+                
+                threading.Thread(target=run_action_with_afterclick, daemon=True).start()
         return cb
 
     def _recompute_conditionals(self):
         """Recompute visibility for all widgets with 'if' conditions."""
         if hasattr(self, '_conditional_widgets'):
+            tab_visibility_changed = False
+            
             for widget, condition in self._conditional_widgets:
                 try:
+                    old_visible = widget.get_visible()
                     should_show = evaluate_if_condition(condition, self.rendered_ids)
                     widget.set_visible(should_show)
+                    
+                    # If this is a tab and visibility changed, mark for focus system update
+                    if hasattr(widget, '_tab_target') and old_visible != should_show:
+                        tab_visibility_changed = True
+                        
                     if DEBUG:
                         print(f"[RECOMPUTE] {condition} -> {should_show}, IDs={self.rendered_ids}")
                 except Exception:
                     pass
+            
+            # Update tab focus system if any tab visibility changed
+            if tab_visibility_changed:
+                self._update_tab_focus_system()
+                # Also ensure the correct tab is active after visibility changes
+                self._ensure_valid_tab_active()
+
+    def _update_tab_focus_system(self):
+        """Update the focus system to only include visible tabs"""
+        for row in self.focus_rows:
+            if hasattr(row, '_items'):
+                original_count = len(row._items)
+                # Filter out invisible tabs from the items list
+                visible_items = []
+                for item in row._items:
+                    if hasattr(item, '_tab_target'):
+                        # This is a tab - only include if visible
+                        if item.get_visible():
+                            visible_items.append(item)
+                        else:
+                            pass
+                    else:
+                        # Not a tab - always include
+                        visible_items.append(item)
+                
+                # Update the items list with only visible items
+                row._items = visible_items
+                
+                # Reset item index if it's now out of bounds
+                if hasattr(row, '_item_index') and row._item_index >= len(row._items):
+                    row._item_index = max(0, len(row._items) - 1)
+
+    def _ensure_valid_tab_active(self):
+        """Ensure that a visible tab is active, and switch content accordingly"""
+        # Find tab rows
+        for row in self.focus_rows:
+            if hasattr(row, '_items') and hasattr(row, '_tabs'):
+                # This is a tab row
+                active_tab = None
+                visible_tabs = []
+                
+                # Find currently active tab and collect visible tabs
+                for tab in row._tabs:
+                    if tab.get_visible():
+                        visible_tabs.append(tab)
+                        if tab.get_active():
+                            active_tab = tab
+                
+                
+                # Only switch tabs if NO tab is active
+                if not active_tab:
+                    if visible_tabs:
+                        visible_tabs[0].set_active(True)
+                elif not active_tab.get_visible():
+                    # Current active tab became invisible, switch to first visible
+                    if visible_tabs:
+                        visible_tabs[0].set_active(True)
+                
+                # Update the row's _items to only include visible tabs
+                row._items = [tab for tab in row._tabs if tab.get_visible()]
+                
+                # Reset item index if needed
+                if hasattr(row, '_item_index') and row._item_index >= len(row._items):
+                    row._item_index = max(0, len(row._items) - 1)
 
     # ---- Builders for UI elements ----
     def build_text(self, parent_feat, sub, row_box, align_end=False):
@@ -1049,6 +1635,7 @@ class UICore:
     def build_button(self, parent_feat, sub, row_box, pack_end=False):
         text = (sub.attrs.get("display", "") or "Button").strip()
         action = sub.attrs.get("action", "")
+        afterclick = sub.attrs.get("afterclick", "")
         btn = Gtk.Button.new_with_label(_(text))
         btn.get_style_context().add_class("cc-button")
         btn.set_can_focus(True)
@@ -1063,7 +1650,10 @@ class UICore:
             btn.set_halign(Gtk.Align.CENTER)
 
         (row_box.pack_end if pack_end else row_box.pack_start)(btn, False, False, 6)
-        btn.connect("clicked", self.make_action_cb(action, key=f"btn:{text}:{action}"))
+        btn.connect("clicked", self.make_action_cb(action, key=f"btn:{text}:{action}", afterclick=afterclick))
+        
+        # Add touchscreen synchronization
+        self.add_touch_sync_to_widget(btn)
 
         # Register ID for buttons (they always produce visual content)
         register_element_id(sub, self.rendered_ids)
@@ -1076,6 +1666,7 @@ class UICore:
         toggle_value = (sub.attrs.get("value", "") or "").strip()  # New value parameter
         action_on = sub.attrs.get("action_on", "")
         action_off = sub.attrs.get("action_off", "")
+        afterclick = sub.attrs.get("afterclick", "")
         refresh = float(sub.attrs.get("refresh", parent_feat.attrs.get("refresh", DEFAULT_REFRESH_SEC)))
 
         # Determine which command to use for status
@@ -1172,9 +1763,17 @@ class UICore:
 
             act = action_on if tbtn.get_active() else action_off
             if act:
-                threading.Thread(target=lambda: run_shell_capture(act), daemon=True).start()
+                def run_toggle_action():
+                    run_shell_capture(act)
+                    # Run afterclick if specified
+                    if afterclick:
+                        handle_afterclick(self, afterclick)
+                threading.Thread(target=run_toggle_action, daemon=True).start()
 
         tbtn.connect("toggled", on_toggled)
+        
+        # Add touchscreen synchronization
+        self.add_touch_sync_to_widget(tbtn)
 
         # Register ID for toggles (they always produce visual content)
         register_element_id(sub, self.rendered_ids)
@@ -1209,6 +1808,7 @@ class UICore:
         # Get actions and value
         action_on = (sub.attrs.get("action_on", "") or "").strip()
         action_off = (sub.attrs.get("action_off", "") or "").strip()
+        afterclick = sub.attrs.get("afterclick", "")
         value_cmd = (sub.attrs.get("value", "") or "").strip()
         refresh = float(sub.attrs.get("refresh", parent_feat.attrs.get("refresh", DEFAULT_REFRESH_SEC)))
         
@@ -1275,12 +1875,18 @@ class UICore:
                 # Mark that user just changed it
                 switch_state["last_user_change"] = time.time()
                 
+                def run_switch_action(action):
+                    run_shell_capture(action)
+                    # Run afterclick if specified
+                    if afterclick:
+                        handle_afterclick(self, afterclick)
+                
                 if state and action_on:
                     if self.debouncer.allow(f"switch_on:{action_on}"):
-                        threading.Thread(target=lambda: run_shell_capture(action_on), daemon=True).start()
+                        threading.Thread(target=lambda: run_switch_action(action_on), daemon=True).start()
                 elif not state and action_off:
                     if self.debouncer.allow(f"switch_off:{action_off}"):
-                        threading.Thread(target=lambda: run_shell_capture(action_off), daemon=True).start()
+                        threading.Thread(target=lambda: run_switch_action(action_off), daemon=True).start()
                 
                 return False  # Return False to allow the state change
             except Exception as e:
@@ -1289,6 +1895,9 @@ class UICore:
         
         # Connect the switch signal - use "state-set" for GtkSwitch
         switch.connect("state-set", on_switch_toggled)
+        
+        # Add touchscreen synchronization
+        self.add_touch_sync_to_widget(switch)
         
         # Set up value monitoring if provided
         if is_cmd(value_cmd):
@@ -2212,6 +2821,11 @@ def ui_build_containers(core: UICore, xml_root):
     available = max(300, core._max_height - 80)
     scrolled.set_max_content_height(available)
     outer.pack_start(scrolled, True, True, 0)
+    
+    # Store scrolled window reference for auto-scrolling
+    core._scrolled_window = scrolled
+    if DEBUG:
+        print(f"DEBUG: Stored scrolled window reference in core: {scrolled}")
 
     content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
     scrolled.add(content_box)
@@ -2470,23 +3084,7 @@ def ui_build_containers(core: UICore, xml_root):
                 find_rows_in_widget(content_widget, content_widget._tab_rows)
 
     win._tab_row = tab_row
-    if tab_row and hasattr(tab_row, '_tabs') and tab_row._tabs:
-        # Find first visible tab
-        first_tab = None
-        for t in tab_row._tabs:
-            if t.is_visible():
-                first_tab = t
-                break
-        if first_tab is not None:
-            # Activate it (this will trigger the existing toggled handler to show content)
-            # Block re-entrancy safety is handled in make_switch_handler
-            first_tab.set_active(True)
-            # Also set keyboard focus on the tab row itself - use CSS classes
-            try:
-                ctx = first_tab.get_style_context()
-                ctx.add_class("focused-cell")
-            except Exception:
-                pass
+    # Don't activate first tab here - will be done after conditional visibility is evaluated
 
     # Footer vgroups at the bottom
     footer_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
@@ -2527,10 +3125,14 @@ def _init_focus(core: UICore):
         if not hasattr(first_row, "_item_index"):
             first_row._item_index = 0
         item = first_row._items[first_row._item_index]
-        ctx = item.get_style_context()
-        ctx.add_class("focused-cell")
-        ctx.add_class("choice-selected")
-        _focus_widget(item)
+        if core.apply_focus_classes_if_allowed(item):
+            _focus_widget(item)
+    
+    # Auto-scroll to show the initially focused element (with small delay for window to render)
+    def delayed_scroll():
+        core.scroll_to_focused_widget()
+        return False
+    GLib.timeout_add(100, delayed_scroll)
 
 
 def _get_group_container_new(core: UICore, parent_box: Gtk.Box, display_title: str):
@@ -2754,6 +3356,9 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                             if btn:
                                 btn.set_can_focus(True)
                                 cell_controls.append(btn)
+                                
+                                # Add touchscreen synchronization
+                                core.add_touch_sync_to_widget(btn)
                         elif sub.kind == "button_confirm":
                             text = (sub.attrs.get("display", "") or "Confirm?").strip()
                             action = sub.attrs.get("action", "")
@@ -2764,11 +3369,15 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                             feat_box.pack_start(btn, False, False, 6)
                             def on_confirm_click(_w, _core=core, _text=text, _action=action):
                                 _core._about_to_show_dialog = True
-                                _core._about_to_show_dialog = True; _show_confirm_dialog(_core, _text, _action); _core._about_to_show_dialog = False
+                                _afterclick = sub.attrs.get("afterclick", "")
+                                _core._about_to_show_dialog = True; _show_confirm_dialog(_core, _text, _action, _afterclick); _core._about_to_show_dialog = False
                                 _core._about_to_show_dialog = False
                             btn.connect("clicked", on_confirm_click)
                             register_element_id(sub, core.rendered_ids)
                             cell_controls.append(btn)
+                            
+                            # Add touchscreen synchronization
+                            core.add_touch_sync_to_widget(btn)
 
                     cell_box.pack_start(feat_box, False, False, 3)
                 elif hg_child.kind == "text":
@@ -2841,6 +3450,9 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                         btn = core.build_button(child, hg_child, nested_box, pack_end=False)
                         btn.set_can_focus(True)
                         cell_controls.append(btn)
+                        
+                        # Add touchscreen synchronization
+                        core.add_touch_sync_to_widget(btn)
                     elif hg_child.kind == "tab":
                         tab = core.build_tab(child, hg_child, nested_box, pack_end=False)
                         tab.set_can_focus(True)
@@ -2854,9 +3466,13 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                         btn.set_can_focus(True)
                         nested_box.pack_start(btn, False, False, 3)
                         def on_confirm_click(_w, _core=core, _text=text, _action=action):
-                            _core._about_to_show_dialog = True; _show_confirm_dialog(_core, _text, _action); _core._about_to_show_dialog = False
+                            _afterclick = hg_child.attrs.get("afterclick", "")
+                            _core._about_to_show_dialog = True; _show_confirm_dialog(_core, _text, _action, _afterclick); _core._about_to_show_dialog = False
                         btn.connect("clicked", on_confirm_click)
                         cell_controls.append(btn)
+                        
+                        # Add touchscreen synchronization
+                        core.add_touch_sync_to_widget(btn)
                 cell_box.pack_start(nested_box, False, False, 3)
             elif sub.kind == "doc":
                 btn = core.build_doc(child, sub, cell_box, pack_end=False)
@@ -2867,6 +3483,9 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                 btn = core.build_button(child, sub, cell_box, pack_end=False)
                 btn.set_can_focus(True)
                 cell_controls.append(btn)
+                
+                # Add touchscreen synchronization
+                core.add_touch_sync_to_widget(btn)
             elif sub.kind == "tab":
                 tab = core.build_tab(child, sub, cell_box, pack_end=False)
                 tab.set_can_focus(True)
@@ -2881,18 +3500,28 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
                 cell_box.pack_start(btn, False, False, 6)
 
                 def on_confirm_click(_w, _core=core, _text=text, _action=action):
-                    _core._about_to_show_dialog = True; _show_confirm_dialog(_core, _text, _action); _core._about_to_show_dialog = False
+                    _afterclick = sub.attrs.get("afterclick", "")
+                    _core._about_to_show_dialog = True; _show_confirm_dialog(_core, _text, _action, _afterclick); _core._about_to_show_dialog = False
 
                 btn.connect("clicked", on_confirm_click)
                 cell_controls.append(btn)
+                
+                # Add touchscreen synchronization
+                core.add_touch_sync_to_widget(btn)
             elif sub.kind == "toggle":
                 tog = core.build_toggle(child, sub, cell_box, pack_end=False)
                 tog.set_can_focus(True)
                 cell_controls.append(tog)
+                
+                # Add touchscreen synchronization
+                core.add_touch_sync_to_widget(tog)
             elif sub.kind == "switch":
                 switch = core.build_switch(child, sub, cell_box, pack_end=False)
                 switch.set_can_focus(True)
                 cell_controls.append(switch)
+                
+                # Add touchscreen synchronization
+                core.add_touch_sync_to_widget(switch)
 
         # Add choice button if feature has choice children
         choices = [c for c in child.children if c.kind == "choice"]
@@ -2913,6 +3542,9 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
             cell_box.pack_start(choice_btn, False, False, 6)
             choice_btn.connect("clicked", lambda *_: open_choice())
             cell_controls.append(choice_btn)
+            
+            # Add touchscreen synchronization
+            core.add_touch_sync_to_widget(choice_btn)
 
         # Make cell focusable only if it has interactive controls
         if not is_header_row and cell_controls:
@@ -2967,10 +3599,8 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
 
                 # Highlight only the current control
                 ctrl = controls[ctrl_idx]
-                ctx = ctrl.get_style_context()
-                ctx.add_class("focused-cell")
-                ctx.add_class("choice-selected")
-                _focus_widget(ctrl)
+                if core.apply_focus_classes_if_allowed(ctrl, "cell-based"):
+                    _focus_widget(ctrl)
 
         def on_row_left():
             """Navigate to previous control (within cell or previous cell)"""
@@ -3102,6 +3732,9 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
         row._items.append(choice_btn)
         if not hasattr(row, "_on_activate"):
             row._on_activate = open_choice
+            
+        # Add touchscreen synchronization
+        core.add_touch_sync_to_widget(choice_btn)
 
     for sub in feat.children:
         kind = sub.kind
@@ -3109,17 +3742,22 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
         if kind == "button":
             text = (sub.attrs.get("display", "") or "Button").strip()
             action = sub.attrs.get("action", "")
+            afterclick = sub.attrs.get("afterclick", "")
             btn = Gtk.Button.new_with_label(_(text))
             btn.get_style_context().add_class("cc-button")
             btn.set_can_focus(True)
             btn.set_size_request(70, -1)  # Fixed width for buttons
             row_box.pack_start(btn, False, False, 8)
-            btn.connect("clicked", core.make_action_cb(action, key=f"btn:{text}:{action}"))
+            btn.connect("clicked", core.make_action_cb(action, key=f"btn:{text}:{action}", afterclick=afterclick))
             row._items.append(btn)
+            
+            # Add touchscreen synchronization
+            core.add_touch_sync_to_widget(btn)
 
         elif kind == "button_confirm":
             text = (sub.attrs.get("display", "") or "Confirm?").strip()
             action = sub.attrs.get("action", "")
+            afterclick = sub.attrs.get("afterclick", "")
             btn = Gtk.Button.new_with_label(_(text))
             btn.get_style_context().add_class("cc-button")
             btn.get_style_context().add_class("cc-button-confirm")
@@ -3128,10 +3766,13 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
             row_box.pack_start(btn, False, False, 8)
 
             def on_confirm_click(_w):
-                core._about_to_show_dialog = True; _show_confirm_dialog(core, text, action); core._about_to_show_dialog = False
+                core._about_to_show_dialog = True; _show_confirm_dialog(core, text, action, afterclick); core._about_to_show_dialog = False
 
             btn.connect("clicked", on_confirm_click)
             row._items.append(btn)
+            
+            # Add touchscreen synchronization
+            core.add_touch_sync_to_widget(btn)
 
         elif kind == "text":
             lbl = Gtk.Label(label="")
@@ -3257,7 +3898,8 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
                     btn.set_size_request(70, -1)
                     nested_box.pack_start(btn, False, False, 3)
                     def on_confirm_click(_w, _core=core, _text=text, _action=action):
-                        _core._about_to_show_dialog = True; _show_confirm_dialog(_core, _text, _action); _core._about_to_show_dialog = False
+                        _afterclick = hg_child.attrs.get("afterclick", "")
+                        _core._about_to_show_dialog = True; _show_confirm_dialog(_core, _text, _action, _afterclick); _core._about_to_show_dialog = False
                     btn.connect("clicked", on_confirm_click)
                     row._items.append(btn)
 
@@ -3287,65 +3929,102 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
             def make_switch_handler(target_tab):
                 """Create a switch handler for a specific tab"""
                 def switch_to_tab(btn):
-                    if not btn.get_active():
-                        # User clicked an already-active tab - keep it active
-                        # Block signal to prevent recursion
-                        btn.handler_block_by_func(switch_to_tab)
-                        btn.set_active(True)
-                        btn.handler_unblock_by_func(switch_to_tab)
+                    # Add debug to identify caller
+                    import traceback
+                    caller_info = traceback.extract_stack()[-2]
+                    if DEBUG:
+                        print(f"DEBUG: switch_to_tab called from {caller_info.filename}:{caller_info.lineno} in {caller_info.name}")
+                        print(f"DEBUG: Button pressed: {btn.get_label()}, target: {getattr(btn, '_tab_target', 'NO_TARGET')}")
+                    
+                    # Prevent recursive tab switching
+                    core = row._core
+                    if hasattr(core, '_tab_switching_in_progress') and core._tab_switching_in_progress:
                         return
+                    
+                    core._tab_switching_in_progress = True
+                    
+                    try:
+                        # Ensure this tab is active and uncheck all others
+                        btn.set_active(True)
+                        
+                        # Update the _item_index to point to this tab
+                        if hasattr(row, '_items') and target_tab in row._items:
+                            tab_index = row._items.index(target_tab)
+                            row._item_index = tab_index
+                        
+                        # Uncheck all other tabs (block signals to prevent recursion)
+                        for t in row._tabs:
+                            if t != target_tab:
+                                t.handler_block_by_func(t._switch_handler)
+                                t.set_active(False)
+                                t.handler_unblock_by_func(t._switch_handler)
 
-                    # Uncheck all other tabs (block signals to prevent recursion)
-                    for t in row._tabs:
-                        if t != target_tab:
-                            t.handler_block_by_func(t._switch_handler)
-                            t.set_active(False)
-                            t.handler_unblock_by_func(t._switch_handler)
+                        # Show/hide content based on target
+                        target = getattr(target_tab, '_tab_target', '')
+                        if target and hasattr(row, '_tab_contents') and hasattr(row, '_content_box'):
+                            content_box = row._content_box
+                            core = row._core  # Get core reference
 
-                    # Show/hide content based on target
-                    target = getattr(target_tab, '_tab_target', '')
-                    if target and hasattr(row, '_tab_contents') and hasattr(row, '_content_box'):
-                        content_box = row._content_box
-                        core = row._core  # Get core reference
+                            # Collect all tab content rows to remove from focus list
+                            all_tab_rows = []
+                            for content_id, content_widget in row._tab_contents.items():
+                                if hasattr(content_widget, '_tab_rows'):
+                                    all_tab_rows.extend(content_widget._tab_rows)
 
-                        # Collect all tab content rows to remove from focus list
-                        all_tab_rows = []
-                        for content_id, content_widget in row._tab_contents.items():
-                            if hasattr(content_widget, '_tab_rows'):
-                                all_tab_rows.extend(content_widget._tab_rows)
+                            # Remove all tab content rows from focus_rows
+                            for r in all_tab_rows:
+                                if r in core.focus_rows:
+                                    core.unhighlight_row(r)
+                                    core.focus_rows.remove(r)
+                            # Remove all tab content frames
+                            for content_id, content_widget in row._tab_contents.items():
+                                if hasattr(content_widget, '_frame'):
+                                    frame = content_widget._frame
+                                    if frame.get_parent():
+                                        frame.get_parent().remove(frame)
+                            # Add back and show the selected content
+                            if target in row._tab_contents:
+                                content_widget = row._tab_contents[target]
+                                if hasattr(content_widget, '_frame'):
+                                    # Insert frame into content_box
+                                    content_box.pack_start(content_widget._frame, False, False, 0)
+                                    content_widget._frame.show_all()
+                                # Add this tab's rows back to focus_rows
+                                if hasattr(content_widget, '_tab_rows'):
+                                    for r in content_widget._tab_rows:
+                                        if r not in core.focus_rows:
+                                            core.focus_rows.append(r)
+                            else:
+                                pass
+                            # Reset focus index if needed
+                            if core.focus_index >= len(core.focus_rows):
+                                core.focus_index = max(0, len(core.focus_rows) - 1)
+                            
+                            # Auto-scroll to show the focused element in the new tab content
+                            def delayed_tab_scroll():
+                                # First scroll to top of the new tab content
+                                if hasattr(core, '_scrolled_window'):
+                                    vadjustment = core._scrolled_window.get_vadjustment()
+                                    vadjustment.set_value(0)
+                                # Then scroll to focused element
+                                core.scroll_to_focused_widget()
+                                return False
+                            GLib.timeout_add(50, delayed_tab_scroll)
+                        
+                        
+                    finally:
+                        # Always clear the flag, even if an exception occurs
+                        core._tab_switching_in_progress = False
 
-                        # Remove all tab content rows from focus_rows
-                        for r in all_tab_rows:
-                            if r in core.focus_rows:
-                                core.unhighlight_row(r)
-                                core.focus_rows.remove(r)
-                        # Remove all tab content frames
-                        for content_id, content_widget in row._tab_contents.items():
-                            if hasattr(content_widget, '_frame'):
-                                frame = content_widget._frame
-                                if frame.get_parent():
-                                    frame.get_parent().remove(frame)
-                        # Add back and show the selected content
-                        if target in row._tab_contents:
-                            content_widget = row._tab_contents[target]
-                            if hasattr(content_widget, '_frame'):
-                                # Insert frame into content_box
-                                content_box.pack_start(content_widget._frame, False, False, 0)
-                                content_widget._frame.show_all()
-                            # Add this tab's rows back to focus_rows
-                            if hasattr(content_widget, '_tab_rows'):
-                                for r in content_widget._tab_rows:
-                                    if r not in core.focus_rows:
-                                        core.focus_rows.append(r)
-                        # Reset focus index if needed
-                        if core.focus_index >= len(core.focus_rows):
-                            core.focus_index = max(0, len(core.focus_rows) - 1)
                 return switch_to_tab
             # Connect tab buttons to switch content
             for tab in tabs:
                 handler = make_switch_handler(tab)
                 tab._switch_handler = handler
                 tab.connect("toggled", handler)
+                
+                # Add touchscreen synchronization
+                core.add_touch_sync_to_widget(tab)
             # Don't activate first tab yet - will be done after content is linked
         # Left/Right selection within row
         def _set_item_focus(idx: int):
@@ -3411,7 +4090,7 @@ def _hide_dialog_action_area(dialog):
         content.set_vexpand(True)
         content.set_hexpand(True)
 
-def _show_confirm_dialog(core: UICore, message: str, action: str):
+def _show_confirm_dialog(core: UICore, message: str, action: str, afterclick: str = ""):
     """Show a confirmation dialog before executing an action"""
     core._dialog_open = True  # Prevent main window from closing
     core._suspend_inactivity_timer = True  # Suspend timer for confirm dialog
@@ -3487,6 +4166,8 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
     else:
         cancel_btn.set_size_request(100, -1)
     cancel_btn.set_can_focus(True)
+    # Explicitly prevent GTK from giving this button default focus
+    cancel_btn.set_receives_default(False)
     button_box.pack_start(cancel_btn, False, False, 0)
     cancel_btn.connect("clicked", lambda _: dialog.destroy())
     buttons.append(cancel_btn)
@@ -3498,23 +4179,67 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
     else:
         cancel_btn.set_size_request(100, -1)
     confirm_btn.set_can_focus(True)
+    # Explicitly prevent GTK from giving this button default focus
+    confirm_btn.set_receives_default(False)
     button_box.pack_start(confirm_btn, False, False, 0)
     buttons.append(confirm_btn)
 
     def update_button_focus():
+        # Clear focus from ALL widgets in the main UI first
+        try:
+            for row in core.focus_rows:
+                if hasattr(row, "_items") and row._items:
+                    for item in row._items:
+                        try:
+                            ctx = item.get_style_context()
+                            ctx.remove_class("focused-cell")
+                            ctx.remove_class("choice-selected")
+                        except:
+                            pass
+                if hasattr(row, "_cells") and row._cells:
+                    for cell_ev, controls in row._cells:
+                        try:
+                            cell_ev.get_style_context().remove_class("focused-cell")
+                            for ctrl in controls:
+                                ctx = ctrl.get_style_context()
+                                ctx.remove_class("focused-cell")
+                                ctx.remove_class("choice-selected")
+                        except:
+                            pass
+        except:
+            pass
+        
+        # Clear focus from all dialog buttons
         for i, btn in enumerate(buttons):
-            ctx = btn.get_style_context()
-            if i == current_btn[0]:
-                ctx.add_class("focused-cell")
-                ctx.add_class("choice-selected")
-                # Don't use grab_focus() - conflicts with touchscreen
-            else:
+            try:
+                ctx = btn.get_style_context()
+                classes_before = list(ctx.list_classes())
                 ctx.remove_class("focused-cell")
                 ctx.remove_class("choice-selected")
+                classes_after = list(ctx.list_classes())
+            except Exception as e:
+                pass
+        
+        # Apply focus to the current button
+        if 0 <= current_btn[0] < len(buttons):
+            try:
+                current_button = buttons[current_btn[0]]
+                ctx = current_button.get_style_context()
+                classes_before = list(ctx.list_classes())
+                ctx.add_class("focused-cell")
+                ctx.add_class("choice-selected")
+                classes_after = list(ctx.list_classes())
+            except Exception as e:
+                pass
 
     def on_confirm(_w):
         if action:
-            threading.Thread(target=lambda: run_shell_capture(action), daemon=True).start()
+            def run_confirm_action():
+                run_shell_capture(action)
+                # Run afterclick if specified
+                if afterclick:
+                    handle_afterclick(core, afterclick)
+            threading.Thread(target=run_confirm_action, daemon=True).start()
         dialog.destroy()
 
     # Override gamepad handler for dialog
@@ -3530,6 +4255,7 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
         elif action_key == "back":
             dialog.destroy()
         elif action_key in ("axis_left", "axis_right", "pan_left", "pan_right"):
+            old_btn = current_btn[0]
             current_btn[0] = 1 - current_btn[0]  # Toggle between 0 and 1
             update_button_focus()
         return False
@@ -3567,6 +4293,10 @@ def _show_confirm_dialog(core: UICore, message: str, action: str):
 
     dialog.show_all()
     current_btn[0] = 0  # Default to Cancel
+    
+    # Ensure no GTK focus is set initially
+    dialog.set_focus(None)
+    
     GLib.idle_add(update_button_focus)
 
     # Connect destroy handler to clean up
@@ -3656,25 +4386,36 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
     choice_buttons = []
     current_choice = [0]  # Always start with first choice
 
-    def on_choice_selected(action: str):
+    def on_choice_selected(action: str, afterclick_attr: str = ""):
         import threading
         dialog.destroy()
         if action:
-            threading.Thread(target=lambda: run_shell_capture(action), daemon=True).start()
+            def run_choice_action():
+                run_shell_capture(action)
+                # Run afterclick if specified
+                if afterclick_attr:
+                    handle_afterclick(core, afterclick_attr)
+            threading.Thread(target=run_choice_action, daemon=True).start()
 
     def update_choice_focus():
-        for i, btn in enumerate(choice_buttons):
-            ctx = btn.get_style_context()
-            # First, remove all focus-related classes from all buttons
-            ctx.remove_class("focused-cell")
-            ctx.remove_class("choice-selected")
+        # Clear focus from all choice buttons
+        for btn in choice_buttons:
+            try:
+                ctx = btn.get_style_context()
+                ctx.remove_class("focused-cell")
+                ctx.remove_class("choice-selected")
+            except:
+                pass
             
-        # Then add the classes only to the selected button
+        # Apply focus to selected button
         if 0 <= current_choice[0] < len(choice_buttons):
-            selected_btn = choice_buttons[current_choice[0]]
-            selected_ctx = selected_btn.get_style_context()
-            selected_ctx.add_class("focused-cell")
-            selected_ctx.add_class("choice-selected")
+            try:
+                selected_btn = choice_buttons[current_choice[0]]
+                ctx = selected_btn.get_style_context()
+                ctx.add_class("focused-cell")
+                ctx.add_class("choice-selected")
+            except:
+                pass
 
     # Override core's gamepad handler temporarily for dialog navigation
     original_handler = core._handle_gamepad_action
@@ -3700,15 +4441,16 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
     for choice in choices:
         display = (choice.attrs.get("display", "") or "Option").strip()
         action = choice.attrs.get("action", "")
+        afterclick = choice.attrs.get("afterclick", "")
 
         btn = Gtk.Button.new_with_label(_(display))
         btn.set_can_focus(True)
         btn.get_style_context().add_class("choice-option")
         choice_box.pack_start(btn, False, False, 0)
 
-        def on_choice_click(_w, a=action):
+        def on_choice_click(_w, a=action, ac=afterclick):
             core.reset_inactivity_timer()  # Reset timer on button click
-            on_choice_selected(a)
+            on_choice_selected(a, ac)
 
         btn.connect("clicked", on_choice_click)
         choice_buttons.append(btn)

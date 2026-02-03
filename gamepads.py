@@ -1,4 +1,4 @@
-# ui_core.py - main UI components for the Control Center
+# gamepads.py - Manage the controllers configured from ES
 # This file is part of the batocera distribution (https://batocera.org).
 # Copyright (c) 2025-2026 lbrpdx for the Batocera team
 #

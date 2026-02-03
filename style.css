@@ -155,12 +155,30 @@ button.focused-cell {
   background-image: none;
   box-shadow: 0 0 4px rgba(77, 208, 225, 0.8); /* cyan halo */
 }
+
+/* Specific rule for button_confirm highlighting - higher specificity */
+button.cc-button.cc-button-confirm.choice-selected,
+button.cc-button.cc-button-confirm.focused-cell,
+button.cc-button.cc-button-confirm:focus {
+  background-color: #142439;
+  border-color: #4f8dff;
+  color: #4dd0e1;
+  background-image: none;
+  box-shadow: 0 0 4px rgba(77, 208, 225, 0.8); /* cyan halo */
+}
 button.cc-button.choice-selected > label,
 button.cc-button.focused-cell > label,
 button.cc-button:focus > label,
 button.cc-choice.choice-selected > label,
 button.choice-option.choice-selected > label,
 button.focused-cell > label {
+  color: #4dd0e1;
+}
+
+/* Label highlighting for button_confirm - higher specificity */
+button.cc-button.cc-button-confirm.choice-selected > label,
+button.cc-button.cc-button-confirm.focused-cell > label,
+button.cc-button.cc-button-confirm:focus > label {
   color: #4dd0e1;
 }
 
@@ -208,6 +226,41 @@ button.cc-toggle:focus {
   border-color: #4dd0e1;
   color: #ffffff;
   box-shadow: 0 0 4px rgba(77, 208, 225, 0.8); /* cyan halo */
+}
+
+/* Switch focus highlighting - make selection much more obvious */
+.cc-switch.choice-selected,
+.cc-switch.focused-cell,
+.cc-switch:focus {
+  background-color: #4dd0e1;  /* Bright cyan background when selected */
+  border-color: #ffffff;  /* White border for high contrast - keep same width */
+  box-shadow: 0 0 8px rgba(77, 208, 225, 1.0); /* Strong cyan glow */
+}
+
+/* Switch slider when selected - make it stand out */
+.cc-switch.choice-selected > slider,
+.cc-switch.focused-cell > slider,
+.cc-switch:focus > slider {
+  background-color: #ffffff;  /* White slider when switch is selected */
+  border-color: #0f1115;  /* Dark border for contrast - keep same width */
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.8);  /* White glow on slider */
+}
+
+/* When switch is both checked AND selected - maximum visibility */
+.cc-switch:checked.choice-selected,
+.cc-switch:checked.focused-cell,
+.cc-switch:checked:focus {
+  background-color: #4dd0e1;  /* Bright cyan */
+  border-color: #ffffff;  /* White border - keep same width */
+  box-shadow: 0 0 12px rgba(77, 208, 225, 1.0); /* Extra strong glow */
+}
+
+.cc-switch:checked.choice-selected > slider,
+.cc-switch:checked.focused-cell > slider,
+.cc-switch:checked:focus > slider {
+  background-color: #ffffff;  /* White slider */
+  border-color: #0f1115;  /* Dark border - keep same width */
+  box-shadow: 0 0 6px rgba(255, 255, 255, 1.0);  /* Strong white glow */
 }
 
 /* Tabs: distinct tab-like styling, visually different from buttons */
@@ -402,13 +455,7 @@ dialog .dialog-action-area,
 }
 
 .cc-switch:checked > slider {
-  background-color: #63a4ff;
+  background-color: #ffffff;  /* Keep slider white when checked for contrast */
   border-color: #4f8dff;
 }
 
-.cc-switch.focused-cell,
-.cc-switch.choice-selected,
-.cc-switch:focus {
-  border-color: #4f8dff;
-  box-shadow: 0 0 12px rgba(77, 208, 225, 1.0);
-}
