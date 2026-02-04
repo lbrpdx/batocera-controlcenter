@@ -2307,6 +2307,7 @@ class UICore:
         qrcode_style = sub.attrs.get("style")
         qrcode_logo = sub.attrs.get("logo")
         qrcode_font = sub.attrs.get("font")
+        footer_text = sub.attrs.get("text")
 
         # Parse width/height - handle both pixels and percentages
         def parse_dimension(value: str, reference_size: int = 100) -> int | None:
@@ -2371,7 +2372,8 @@ class UICore:
 
         (row_box.pack_end if pack_end else row_box.pack_start)(img, False, False, 6)
 
-        def generate_qrcode(data: str, qrcode_style: str | None, qrcode_logo: str | None, qrcode_font: str | None):
+        def generate_qrcode(data: str, qrcode_style: str | None, qrcode_logo: str | None,
+                            qrcode_font: str | None, footer_text:str | None):
             """Generate QR code from data string"""
             try:
                 data = data.strip()
@@ -2410,7 +2412,7 @@ class UICore:
                 pil_img = qr.make_image(fill_color=fill_color, back_color=bg_hex)
 
                 if qrcode_style == "card":
-                    pil_img = enchancementQr_card(pil_img, qrcode_style, qrcode_logo, qrcode_font)
+                    pil_img = enchancementQr_card(pil_img, qrcode_style, qrcode_logo, qrcode_font, footer_text)
 
                 # Convert PIL image to pixbuf
                 buffer = BytesIO()
@@ -2430,7 +2432,7 @@ class UICore:
                 print(f"Error generating QR code for '{data}': {e}")
                 return None
 
-        def enchancementQr_card(qr_img, qrcode_style, qrcode_logo, qrcode_font):
+        def enchancementQr_card(qr_img, qrcode_style, qrcode_logo, qrcode_font, footer_text):
             from PIL import Image, ImageDraw, ImageFont
 
             img_width = 300
@@ -2442,7 +2444,6 @@ class UICore:
             resample = Image.LANCZOS
             logo_height = qr_width // 4
             footer_height = logo_height // 2
-            footer_text = "SCAN"
             footer_border = footer_height // 3
             footer_color = (150, 150, 200)
             img_height = qr_width + border_size*2 + qr_border_size*2
@@ -2474,7 +2475,7 @@ class UICore:
             card_img.paste(qr_img, (pos_x, pos_y), qr_img)
 
             # footer
-            if qrcode_font:
+            if qrcode_font and footer_text:
                 footer_font = ImageFont.truetype(qrcode_font, footer_height)
                 footer_width = draw.textlength(footer_text, font=footer_font)
                 draw.rounded_rectangle([(img_width-footer_width)//2-footer_border, img_height-footer_height-border_size,
@@ -2487,10 +2488,11 @@ class UICore:
 
             return card_img
 
-        def update_qrcode(data: str, qrcode_style: str | None, qrcode_logo: str | None, qrcode_font: str | None):
+        def update_qrcode(data: str, qrcode_style: str | None, qrcode_logo: str | None,
+                          qrcode_font: str | None, footer_text: str | None):
             """Update the QR code image widget"""
             def do_generate():
-                pixbuf = generate_qrcode(data, qrcode_style, qrcode_logo, qrcode_font)
+                pixbuf = generate_qrcode(data, qrcode_style, qrcode_logo, qrcode_font, footer_text)
                 if pixbuf:
                     # Show and update image when valid data
                     GLib.idle_add(lambda pb=pixbuf: (img.set_from_pixbuf(pb), img.set_visible(True)) or False)
@@ -2520,14 +2522,15 @@ class UICore:
                 if element_id:
                     register_element_id(sub, self.rendered_ids)
                     self._recompute_conditionals()
-                update_qrcode(initial_val, qrcode_style, qrcode_logo, qrcode_font)
+                update_qrcode(initial_val, qrcode_style, qrcode_logo, qrcode_font, footer_text)
 
-            def upd(val: str, _img=img, _sub=sub, _core=self, _qrcode_style=qrcode_style, _qrcode_logo=qrcode_logo, _qrcode_font=qrcode_font):
+            def upd(val: str, _img=img, _sub=sub, _core=self, _qrcode_style=qrcode_style,
+                    _qrcode_logo=qrcode_logo, _qrcode_font=qrcode_font, _footer_text=footer_text):
                 txt = (val or "").strip()
                 element_id = (_sub.attrs.get("id", "") or "").strip()
                 
                 if txt and txt.lower() != "null":
-                    update_qrcode(txt, _qrcode_style, _qrcode_logo, _qrcode_font)
+                    update_qrcode(txt, _qrcode_style, _qrcode_logo, _qrcode_font, _footer_text)
                     # Only recompute if this element has an ID (affects conditionals)
                     if element_id:
                         register_element_id(_sub, _core.rendered_ids)
@@ -2552,14 +2555,14 @@ class UICore:
             self.refreshers.append(RefreshTask(upd, c, refresh))
 
             # Generate initial QR code
-            update_qrcode(initial_val, qrcode_style, qrcode_logo, qrcode_font)
+            update_qrcode(initial_val, qrcode_style, qrcode_logo, qrcode_font, footer_text)
 
         elif disp:
             # Static QR code - generate immediately
             if disp.strip() and disp.strip() != "null":
                 # Register ID immediately for static QR codes
                 register_element_id(sub, self.rendered_ids)
-                update_qrcode(disp, qrcode_style, qrcode_logo, qrcode_font)
+                update_qrcode(disp, qrcode_style, qrcode_logo, qrcode_font, footer_text)
             else:
                 # Don't render if empty
                 row_box.remove(img)

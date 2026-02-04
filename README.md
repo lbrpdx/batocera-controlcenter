@@ -499,8 +499,7 @@ Generates and displays a QR code from text, URL, or command output. Requires the
 
 <!-- QR codes with percentage dimensions -->
 <qrcode display="https://batocera.org" width="15%" />
-<qrcode display="${get_wifi_qr}" height="25%" />
-<qrcode display="WiFi:T:WPA;S:MyNetwork;P:password;;" width="20%" height="20%" />
+<qrcode display="${get_wifi_qr}" height="25%" style="card" logo="wifi.png" text="Connect" font="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"  />
 ```
 
 **Attributes:**
@@ -510,6 +509,7 @@ Generates and displays a QR code from text, URL, or command output. Requires the
 - `refresh`: Update interval in seconds (default: 0 = no refresh). Can be integer or float (e.g., `1`, `0.5`, `2.5`)
 - `align`: QR code alignment - `left`, `center` (default), or `right`
 - `bg`: HTML hex code for the background of the QR code - foreground color will be contrasting white or black automatically
+- `style`: you can embed the QR code in a `card` with an optional `logo` on top and footer `text` rendered with the provided `font` type
 
 **Notes:**
 - Requires `qrcode` Python library (already installed on Batocera)
@@ -519,6 +519,7 @@ Generates and displays a QR code from text, URL, or command output. Requires the
 - Useful for sharing URLs, WiFi credentials, or dynamic status information
 - **Percentage dimensions**: Width/height can be specified as percentages (e.g., `width="15%"`) relative to the window size
 - Percentages are calculated based on actual window dimensions when available, with fallback to 800x600 reference
+- `text` and `logo` are valid only with `style="card"`
 
 #### `<progressbar>` - Progress Bar Display
 Displays a progress bar with a numeric value below it. Shows progress as a visual bar and text value.
