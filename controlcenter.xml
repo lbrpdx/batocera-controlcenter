@@ -6,7 +6,7 @@
 		<feature display="Batocera">
 			<text display="${batocera-version | cut -d' ' -f1}" />
 		</feature>
-		<feature display="Touchscreen keyboard" if='${[ -n "$(getLocalWaylandDisplay)" ] &amp;&amp; [ -n "$(touchscreen-detect)" ] &amp;&amp;  echo 1}' refresh="10">
+		<feature display="Touch keyboard" if='${[ -n "$(getLocalWaylandDisplay)" ] &amp;&amp; [ -n "$(touchscreen-detect)" ] &amp;&amp;  echo 1}' refresh="10">
 			<button display="Toggle" action="onscreen-keyboard-toggle" afterclick="bcc_close"/>
 		</feature>
 	</vgroup>

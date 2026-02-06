@@ -28,6 +28,7 @@ from gi.repository import Gtk
 
 from xml_utils import parse_xml, validate_xml
 from ui_core import ControlCenterApp
+from log import debug_print, DEBUG
 
 import locale
 
@@ -71,7 +72,7 @@ def main():
     # show/hide the main window
     def signal_handler_usr1(*_):
         if app_instance[0]:
-            app_instance[0].core.toogle_visibility()
+            app_instance[0].core.toggle_visibility()
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -158,6 +159,7 @@ def main():
 
     app = ControlCenterApp(xml_root, css_path, auto_close_seconds, hidden_at_startup, 
                           fullscreen=args.fullscreen, window_size=window_size)
+    debug_print(f"[STARTUP] app={app}")
     app_instance[0] = app  # Store for signal handler
     app.run()
 

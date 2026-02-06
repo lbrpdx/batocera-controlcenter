@@ -15,12 +15,10 @@ import re
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import threading
+from log import debug_print, DEBUG
 
 from gi.repository import GLib
 
-# Debug flag - can be enabled by setting environment variable
-import os
-DEBUG = os.environ.get('CONTROLCENTER_DEBUG', '').lower() in ('1', 'true', 'yes')
 
 class GamePads:
     def __init__(self):
@@ -49,19 +47,19 @@ class GamePads:
                     isJoystick = ("ID_INPUT_JOYSTICK" in event.properties and event.properties["ID_INPUT_JOYSTICK"] == "1")
                     if isJoystick:
                         device = InputDevice(event.device_node)
-                        print(f"Found gamepad: {device.name} at {event.device_node}")
+                        debug_print(f"[GAMEPAD] Found gamepad: {device.name} at {event.device_node}")
                         self._gamepad_devices.append(device)
             except Exception as e:
-                print(f"Error checking device {event}: {e}")
+                debug_print(f"[GAMEPAD] Error checking device {event}: {e}")
 
     def _grab_devices(self):
         for device in self._gamepad_devices:
             # Grab exclusive access to prevent EmulationStation from receiving events
             try:
                 device.grab()
-                print(f"Grabbed exclusive access to {device.name}")
+                debug_print(f"[GAMEPAD] Grabbed exclusive access to {device.name}")
             except Exception as e:
-                print(f"Could not grab {device.name}: {e}")
+                debug_print(f"[GAMEPAD] Could not grab {device.name}: {e}")
 
     def close_devices(self):
         """Release exclusive access to gamepad devices"""
@@ -69,7 +67,7 @@ class GamePads:
             try:
                 dev.ungrab()
                 dev.close()
-                print(f"Released {dev.name}")
+                debug_print(f"[GAMEPAD] Released {dev.name}")
             except Exception:
                 pass
         self._gamepad_devices = []
@@ -141,18 +139,17 @@ class GamePads:
 
     def startThread(self, handle_gamepad_action):
         def evdev_loop():
-            print("begin thread: evdev")
             try:
                 self.open_devices()
                 if self.nb_devices() == 0:
-                    print("No gamepad devices found via evdev")
+                    debug_print("[GAMEPAD] No gamepad devices found via evdev")
                     return
                 self.listen(handle_gamepad_action)
             except Exception as e:
-                print(f"Evdev gamepad error: {e}")
+                debug_print(f"[GAMEPAD] Evdev gamepad error: {e}")
             finally:
                 self.close_devices()
-            print("end thread: evdev")
+            debug_print("[GAMEPAD] end thread: evdev")
 
         # Store the thread so we can track it
         self._gamepad_thread = threading.Thread(target=evdev_loop, daemon=True)
@@ -328,7 +325,7 @@ class GamePads:
         for dev in self._gamepad_devices:
             mapping = GamePads._find_best_controller_mapping(pads_configs, dev.name, dev.info.bustype, dev.info.vendor, dev.info.product, dev.info.version)
             if mapping is None:
-                print(f"Warning: No mapping found for gamepad {dev.name}")
+                debug_print(f"[GAMEPAD] Warning: No mapping found for gamepad {dev.name}")
                 mappings[dev.fd] = {}  # Empty mapping to prevent errors
             else:
                 mappings[dev.fd] = mapping
@@ -351,13 +348,11 @@ class GamePads:
                         threshold = (abs_info.max - abs_info.min) // 4  # Original 25% deadzone
                         bornemin = abs_info.min + threshold
                         bornemax = abs_info.max - threshold
-                        if DEBUG:
-                            print(f"DEBUG: Axis {code} centered deadzone: {bornemin} to {bornemax} (threshold: {threshold}, range: {abs_info.min}-{abs_info.max})")
+                        debug_print(f"[GAMEPAD] Axis {code} centered deadzone: {bornemin} to {bornemax} (threshold: {threshold}, range: {abs_info.min}-{abs_info.max})")
                     else:
                         bornemin = abs_info.min -1 # can't reach it
                         bornemax = center
-                        if DEBUG:
-                            print(f"DEBUG: Axis {code} non-centered deadzone: {bornemin} to {bornemax} (center: {center}, threshold: {threshold}, range: {abs_info.min}-{abs_info.max})")
+                        debug_print(f"[GAMEPAD] Axis {code} non-centered deadzone: {bornemin} to {bornemax} (center: {center}, threshold: {threshold}, range: {abs_info.min}-{abs_info.max})")
                     axis_infos[dev.fd][code] =  { "bornemin": bornemin, "bornemax": bornemax }
                     
                     # Initialize axis state properly using the same logic as event handling
@@ -393,7 +388,7 @@ class GamePads:
                         self._handle_event(device, event, mappings[device.fd], axis_infos, axis_states, actions, f_handle_gamepad_action)
 
                 except Exception as e:
-                    print(f"Error reading event: {e}")
+                    debug_print(f"[GAMEPAD] Error reading event: {e}")
 
     def _handle_event(self, device, event, mapping, axis_infos, axis_states, actions, f_handle_gamepad_action):
         # Safety check - ensure mapping exists
@@ -445,9 +440,8 @@ class GamePads:
                             axis_value = 0  # Within deadzone
                         
                         # Debug output for PS3 controller troubleshooting
-                        if DEBUG and axis_value != old_axis_value:
-                            print(f"DEBUG: Axis {event.code} changed from {old_axis_value} to {axis_value}")
-                            print(f"       Value: {event.value}, Range: {axis_infos[device.fd][event.code]['bornemin']} to {axis_infos[device.fd][event.code]['bornemax']}")
+                        if axis_value != old_axis_value:
+                            debug_print(f"[GAMEPAD] Axis {event.code} changed from {old_axis_value} to {axis_value} ({event.value} in range {axis_infos[device.fd][event.code]['bornemin']} to {axis_infos[device.fd][event.code]['bornemax']})")
                         
                         # Update axis state
                         axis_states[device.fd][event.code] = axis_value

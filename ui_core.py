@@ -15,12 +15,11 @@ gi.require_version('Gtk', '3.0'); gi.require_version('Gdk', '3.0')
 from gi.repository import Gtk, Gdk, GLib, Pango
 from gamepads import GamePads
 from DocViewer import DocViewer
+from log import debug_print, DEBUG
 
 import locale
 _ = locale.gettext
 
-# Activate for some verbose message on tricky parts of the code
-DEBUG = os.environ.get('CONTROLCENTER_DEBUG', '').lower() in ('1', 'true', 'yes')
 ACTION_DEBOUNCE_MS = 100  # Faster response
 WINDOW_TITLE = "Batocera Control Center"
 
@@ -44,8 +43,7 @@ def handle_afterclick(core: 'UICore', afterclick_attr: str):
     if afterclick == "bcc_close":
         # Special case: hide BCC window (keep app running in background)
         # Don't clear any focus - let GTK handle it naturally
-        if DEBUG:
-            print("DEBUG: Hiding window for bcc_close")
+        debug_print("[AFTERCLICK] Hiding window for bcc_close")
         core.hide()
     elif afterclick.startswith("${") and afterclick.endswith("}"):
         # Command substitution - execute the command
@@ -111,7 +109,7 @@ def should_render_element(element, rendered_ids: set[str]) -> bool:
         element_info = f"{element.kind}"
         if hasattr(element, 'attrs') and element.attrs.get('display'):
             element_info += f" '{element.attrs.get('display')}'"
-        print(f"DEBUG: Condition check for {element_info}: '{if_condition}' -> {result}")
+        debug_print(f"[RENDER] Condition check for {element_info}: '{if_condition}' -> {result}")
     
     return result
 
@@ -132,8 +130,7 @@ def register_element_id(element, rendered_ids: set[str], core=None):
             try:
                 should_show = evaluate_if_condition(condition, rendered_ids)
                 widget.set_visible(should_show)
-                if DEBUG:
-                    print(f"[REGISTER] {condition} -> {should_show}, IDs={self.rendered_ids}")
+                debug_print(f"[REGISTER] {condition} -> {should_show}, IDs={self.rendered_ids}")
             except Exception as e:
                 pass
 
@@ -155,20 +152,16 @@ def _focus_widget(widget: Gtk.Widget):
     pass
 
 def _activate_widget(widget: Gtk.Widget):
-    if isinstance(widget, Gtk.Button):
-        try:
-            widget.emit("clicked")
-        except Exception:
-            pass
-    elif isinstance(widget, Gtk.ToggleButton):
+    if isinstance(widget, Gtk.ToggleButton):
         try:
             # For tabs, always activate (don't toggle)
             if hasattr(widget, '_tab_target'):
                 widget.set_active(True)
             else:
                 widget.set_active(not widget.get_active())
-        except Exception:
-            pass
+        except Exception as e:
+            debug_print(f"[ACTIVATE] Exception {e} for {widget}")
+
     elif isinstance(widget, Gtk.Switch):
         try:
             # Toggle the switch state and emit the state-set signal
@@ -177,8 +170,14 @@ def _activate_widget(widget: Gtk.Widget):
             widget.set_state(new_state)
             # Emit the state-set signal to trigger our handler
             widget.emit("state-set", new_state)
-        except Exception:
-            pass
+        except Exception as e:
+            debug_print(f"[ACTIVATE] Exception {e} for {widget}")
+
+    elif isinstance(widget, Gtk.Button): # ToggleButton is a subclass of Button
+        try:
+            widget.emit("clicked")
+        except Exception as e:
+            debug_print(f"[ACTIVATE] Exception {e} for {widget}")
 
 class UICore:
     def __init__(self, css_path: str, fullscreen: bool = False, window_size: tuple[int, int] | None = None):
@@ -400,19 +399,7 @@ class UICore:
             try:
                 win.grab_focus()
             except Exception as e:
-                print(f"grab_focus failed: {e}")
-
-            # Focus first row - temporarily disabled to avoid conflicts
-            # if self.focus_rows:
-            #     def set_initial_focus():
-            #         try:
-            #             first_row = self.focus_rows[0]
-            #             ctx = first_row.get_style_context()
-            #             ctx.add_class("focused-cell")
-            #         except Exception:
-            #             pass
-            #         return False
-            #     GLib.timeout_add(10, set_initial_focus)
+                debug_print(f"[FOCUS] Exception grab_focus failed: {e}")
 
         # Track if we have an open dialog to prevent closing on dialog focus
         self._dialog_open = False
@@ -470,12 +457,12 @@ class UICore:
             print(f"ERROR: CSS file not found: {self.css_path}")
             return
 
-        print(f"Loading CSS from: {self.css_path}")
+        debug_print(f"[CSS] Loading CSS from: {self.css_path}")
         prov = Gtk.CssProvider()
         try:
             with open(self.css_path, "rb") as f:
                 css_data = f.read()
-                print(f"CSS file size: {len(css_data)} bytes")
+                debug_print(f"[CSS] CSS file size: {len(css_data)} bytes")
 
                 prov.load_from_data(css_data)
             Gtk.StyleContext.add_provider_for_screen(
@@ -483,9 +470,8 @@ class UICore:
                 prov,
                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
             )
-            print("CSS loaded successfully")
         except Exception as e:
-            print(f"CSS load failed: {e}")
+            debug_print(f"[CSS] CSS load failed: {e}")
             import traceback
             traceback.print_exc()
 
@@ -646,10 +632,7 @@ class UICore:
                 self._scroll_widget_into_view(focused_widget, self._scrolled_window)
                 
         except Exception as e:
-            if DEBUG:
-                print(f"DEBUG: Error in scroll_to_focused_widget: {e}")
-            import traceback
-            traceback.print_exc()
+            debug_print(f"[SCROLL] Error in scroll_to_focused_widget: {e}")
 
     def _scroll_widget_into_view(self, widget, scrolled_window):
         """Scroll the widget into view within the scrolled window"""
@@ -683,16 +666,14 @@ class UICore:
             try:
                 widget_x, widget_y = widget.translate_coordinates(toplevel, 0, 0)
             except Exception as e:
-                if DEBUG:
-                    print(f"DEBUG: Failed to translate widget coordinates to toplevel: {e}")
+                debug_print(f"[SCROLL] Failed to translate widget coordinates to toplevel: {e}")
                 return
             
             # Get scrolled window position relative to toplevel
             try:
                 scroll_x, scroll_y = scrolled_window.translate_coordinates(toplevel, 0, 0)
             except Exception as e:
-                if DEBUG:
-                    print(f"DEBUG: Failed to translate scrolled window coordinates to toplevel: {e}")
+                debug_print(f"[SCROLL] Failed to translate scrolled window coordinates to toplevel: {e}")
                 return
             
             # Calculate relative position
@@ -731,10 +712,7 @@ class UICore:
                 vadjustment.set_value(new_scroll)
                 
         except Exception as e:
-            if DEBUG:
-                print(f"DEBUG: Error in _scroll_widget_into_view: {e}")
-            import traceback
-            traceback.print_exc()
+            debug_print(f"[SCROLL] Error in _scroll_widget_into_view: {e}")
 
     def _smooth_scroll_to(self, adjustment, target_value):
         """Smoothly scroll to the target value"""
@@ -765,8 +743,7 @@ class UICore:
             GLib.timeout_add(16, scroll_step)  # ~60fps
             
         except Exception as e:
-            if DEBUG:
-                print(f"DEBUG: Error in _smooth_scroll_to: {e}")
+            debug_print(f"[SCROLL] Error in _smooth_scroll_to: {e}")
             # Fallback to immediate scroll
             adjustment.set_value(target_value)
 
@@ -1114,6 +1091,7 @@ class UICore:
 
     def show(self, *_a):
         self.start_gamepad()
+        self._recompute_conditionals()
         self.window.present()
         self.reset_inactivity_timer()  # Reset timer on button click
         self.start_refresh()
@@ -1125,7 +1103,7 @@ class UICore:
             return False
         GLib.timeout_add(50, delayed_init_focus)
 
-    def toogle_visibility(self, *_a):
+    def toggle_visibility(self, *_a):
         if self.window.is_visible():
             self.hide()
         else:
@@ -1139,11 +1117,13 @@ class UICore:
         active_tab = None
         for tab in self.window._tab_row._tabs:
             if tab.get_active() and tab.is_visible():
+                debug_print(f"[TAB] active tab found")
                 active_tab = tab
                 break
         
         # If no active visible tab, find first visible tab and activate it
         if not active_tab:
+            debug_print(f"[TAB] NO active tab")
             for i, tab in enumerate(self.window._tab_row._tabs):
                 if tab.is_visible():
                     tab.set_active(True)
@@ -1152,6 +1132,9 @@ class UICore:
                         tab_index = self.window._tab_row._items.index(tab)
                         self.window._tab_row._item_index = tab_index
                     break
+
+        debug_print(f"[TAB] active tab = {self.window._tab_row._items.index(tab)}")
+        tab.set_active(True)
 
     def stop_refresh(self):
         for r in self.refreshers:
@@ -1168,12 +1151,13 @@ class UICore:
         GLib.timeout_add(100, start_refreshers_idle)
 
         for widget, condition in self._conditional_widgets:
+            debug_print(f"[REFRESHER] widget: {widget}")
             try:
                 should_show = evaluate_if_condition(condition, self.rendered_ids)
                 widget.set_visible(should_show)
-                if DEBUG:
-                        print(f"[START_REF] {condition} -> {should_show}, IDs={self.rendered_ids}")
+                debug_print(f"[REFRESHER] {condition} -> {should_show}, IDs={self.rendered_ids}")
             except Exception as e:
+                debug_print(f"[REFRESHER] Exception on {condition} : {e}")
                 pass
 
     def quit(self, *_a):
@@ -1241,7 +1225,7 @@ class UICore:
         try:
             self.reset_inactivity_timer()
         except Exception as e:
-            print(f"Error resetting inactivity timer from gamepad: {e}")
+            debug_print(f"[GP_ACTION] Error resetting inactivity timer from gamepad: {e}")
 
         if action == "activate":
             # Check if we're on a row with items and an item is selected
@@ -1345,8 +1329,7 @@ class UICore:
                     if hasattr(widget, '_tab_target') and old_visible != should_show:
                         tab_visibility_changed = True
                         
-                    if DEBUG:
-                        print(f"[RECOMPUTE] {condition} -> {should_show}, IDs={self.rendered_ids}")
+                    debug_print(f"[RECOMPUTE] {condition} -> {should_show}, IDs={self.rendered_ids}")
                 except Exception:
                     pass
             
@@ -1821,7 +1804,7 @@ class UICore:
                 register_element_id(sub, self.rendered_ids)
                 
             except Exception as e:
-                print(f"Error updating switch state: {e}")
+                debug_print(f"[SWITCH] Error updating switch state: {e}")
                 last_state[0] = None
         
         def on_switch_toggled(_switch, state):
@@ -1852,7 +1835,7 @@ class UICore:
                 
                 return False  # Return False to allow the state change
             except Exception as e:
-                print(f"Error in switch toggle handler: {e}")
+                print(f"[SWITCH] Error in switch toggle handler: {e}")
                 return False
         
         # Connect the switch signal - use "state-set" for GtkSwitch
@@ -1920,6 +1903,7 @@ class UICore:
         if if_condition:
             # Track this widget for dynamic visibility updates
             self._conditional_widgets.append((tab_btn, if_condition))
+            debug_print(f"[TAB] added conditional widget for {target}")
             # Initially hide, will be shown after IDs are registered
             tab_btn.set_visible(False)
 
@@ -2075,7 +2059,7 @@ class UICore:
                 self._about_to_show_dialog = False
             except Exception as e:
                 self._dialog_open = False
-                print(e)
+                debug_print(f"[DOCVIEW] Exception: {e}")
 
         def connect_click(btn):
             btn.connect("clicked", lambda *_: (open_doc_viewer(state["path"]) if state["path"] else None))
@@ -2262,15 +2246,14 @@ class UICore:
 
                     return pixbuf
             except Exception as e:
-                print(f"Error loading image from '{path_or_url}': {e}")
+                debug_print(f"[IMG] Error loading image from '{path_or_url}': {e}")
             return None
 
         def update_image(path_or_url: str):
             """Update the image widget"""
             def do_load():
-                pixbuf = load_image(path_or_url)
-                if pixbuf:
-                    GLib.idle_add(lambda pb=pixbuf: img.set_from_pixbuf(pb) or False)
+                pixbuf = load_image(path_or_url) # None = erase previous image
+                GLib.idle_add(lambda pb=pixbuf: img.set_from_pixbuf(pb) or False)
             # Load in background thread to avoid blocking
             threading.Thread(target=do_load, daemon=True).start()
 
@@ -2429,7 +2412,7 @@ class UICore:
                     pixbuf = pixbuf.scale_simple(target_width, target_height, GdkPixbuf.InterpType.BILINEAR)
                 return pixbuf
             except Exception as e:
-                print(f"Error generating QR code for '{data}': {e}")
+                debug_print(f"[QRCODE] Error generating QRcode for '{data}': {e}")
                 return None
 
         def enchancementQr_card(qr_img, qrcode_style, qrcode_logo, qrcode_font, footer_text):
@@ -2675,7 +2658,7 @@ class UICore:
                 container.set_visible(True)
                 
             except Exception as e:
-                print(f"Error updating progress bar: {e}")
+                debug_print(f"[PROGRESS] Error updating progress bar: {e}")
                 container.set_visible(False)
                 last_value[0] = None
         
@@ -2787,10 +2770,6 @@ def ui_build_containers(core: UICore, xml_root):
     scrolled.set_propagate_natural_height(True)  # DO propagate height so window sizes correctly
     # Set a reasonable minimum height for the scrolled area (with 80px room for header/footer)
     available = max(300, core._max_height - 80)
-    # For testing auto-scroll, limit the height to force scrolling
-    if DEBUG:
-        available = min(available, 400)  # Force smaller height in debug mode to test scrolling
-        print(f"DEBUG: Limited scrolled window height to {available}px for testing")
     scrolled.set_max_content_height(available)
     outer.pack_start(scrolled, True, True, 0)
     
@@ -3054,7 +3033,6 @@ def ui_build_containers(core: UICore, xml_root):
                 find_rows_in_widget(content_widget, content_widget._tab_rows)
 
     win._tab_row = tab_row
-    # Don't activate first tab here - will be done after conditional visibility is evaluated
 
     # Footer vgroups at the bottom
     footer_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
@@ -3867,8 +3845,8 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
 
     for sub in feat.children:
         # Check if this sub-element should be rendered
-        if not should_render_element(sub, core.rendered_ids):
-            continue
+        # if not should_render_element(sub, core.rendered_ids):
+        #    continue
 
         kind = sub.kind
 
@@ -4155,6 +4133,7 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
                 # Add touchscreen synchronization
                 core.add_touch_sync_to_widget(tab)
             # Don't activate first tab yet - will be done after content is linked
+
         # Left/Right selection within row
         def _set_item_focus(idx: int):
             if not row._items:
@@ -4162,7 +4141,6 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
             row._item_index = max(0, min(len(row._items) - 1, idx))
             item = row._items[row._item_index]
             _focus_widget(item)
-            
             # For tab rows, also activate the tab to switch content
             if hasattr(item, '_tab_target') and hasattr(row, '_tabs'):
                 item.set_active(True)
@@ -4670,11 +4648,8 @@ class ControlCenterApp:
             self.window.present()
 
     def run(self):
-        self.core.start_refresh()
-        self.core.set_tab_focus()
-
         if not self.hidden_at_startup:
-            self.core.start_gamepad()
+            self.core.show()
 
         # Set up inactivity timer if specified (resets on user interaction)
         if self.auto_close_seconds > 0:
