@@ -45,6 +45,9 @@ def handle_afterclick(core: 'UICore', afterclick_attr: str):
         # Don't clear any focus - let GTK handle it naturally
         debug_print("[AFTERCLICK] Hiding window for bcc_close")
         core.hide()
+    elif afterclick == "bcc_refresh":
+        # Force the UI to re-read all shell commands and toggle visibility
+        GLib.idle_add(core._recompute_conditionals)
     elif afterclick.startswith("${") and afterclick.endswith("}"):
         # Command substitution - execute the command
         cmd = afterclick[2:-1]  # Remove ${ and }
@@ -1307,10 +1310,10 @@ class UICore:
                 def run_action_with_afterclick():
                     # Run the main action first
                     run_shell_capture(act)
-                    # Then run the afterclick if specified
+                    # Force a UI refresh after EVERY action
+                    GLib.idle_add(self._recompute_conditionals)
                     if afterclick:
-                        handle_afterclick(self, afterclick)
-                
+                        GLib.idle_add(lambda: handle_afterclick(self, afterclick))
                 threading.Thread(target=run_action_with_afterclick, daemon=True).start()
         return cb
 
