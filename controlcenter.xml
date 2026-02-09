@@ -2,8 +2,7 @@
 	<vgroup name="Top bar" role="header">
 		<feature>
 			<text display="${batocera-info --short}" refresh="2" />
-			<!-- Recording Indicator (Maybe add a red circle) -->
-			<text display='${/usr/bin/batocera-record is_running | grep -q true &amp;&amp; echo "  [REC ACTIVE]"}' refresh="2" />
+			<img display="/usr/share/batocera/controlcenter/bato-record.gif" if='${/usr/bin/batocera-record is_running | grep -q true}' refresh="2" height="5%" />
 		</feature>
 		<feature display="Batocera">
 			<text display="${batocera-version | cut -d' ' -f1}" />

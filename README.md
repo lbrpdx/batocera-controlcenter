@@ -454,11 +454,23 @@ Creates clickable tabs that switch between different content sections. Tabs must
 ```
 
 #### `<img>` - Image Display
-Shows an image from a file, URL, or command output.
+Shows an image from a file, URL, or command output. **Supports animated GIFs with CPU optimization and scaling!**
 
 ```xml
 <!-- Static image file -->
 <img display="/usr/share/pixmaps/logo.png" width="100" height="100" />
+
+<!-- Animated GIF (optimized for low CPU usage) -->
+<img display="/path/to/animation.gif" width="200" />
+
+<!-- Animated GIF with height constraint (frames scaled on-the-fly) -->
+<img display="/path/to/spinner.gif" height="5%" />
+
+<!-- Animated GIF with custom settings -->
+<img display="/path/to/spinner.gif" animate="true" />
+
+<!-- Disable animation (show first frame only) -->
+<img display="/path/to/animation.gif" animate="false" />
 
 <!-- Image from URL -->
 <img display="http://example.com/image.png" width="200" />
@@ -477,12 +489,21 @@ Shows an image from a file, URL, or command output.
 - `height`: Image height in pixels or percentage (e.g., `150` or `20%`) (optional)
 - `refresh`: Update interval in seconds (default: 0 = no refresh). Can be integer or float (e.g., `1`, `0.5`, `2.5`)
 - `align`: Image alignment - `left`, `center` (default), or `right`
+- `animate`: Enable/disable GIF animation - `true` (default) or `false`
 
 **Notes:**
 - If only width or height is specified, aspect ratio is preserved
 - Supports common formats: PNG, JPEG, GIF, etc.
+- **Animated GIFs**: Automatically detected and played with full animation support
+- **Animated GIF Scaling**: Frames are scaled on-the-fly to match specified dimensions (width/height)
+- **CPU Optimization**: GIF animations are frame-rate limited (default: 15 FPS) and paused when window is hidden
 - **Percentage dimensions**: Width/height can be specified as percentages (e.g., `width="50%"`) relative to the window size
 - Percentages are calculated based on actual window dimensions when available, with fallback to 800x600 reference
+- **Performance Note**: Scaling animated GIFs requires per-frame scaling which uses more CPU than static images. For best performance, pre-scale GIF files to desired size.
+
+**Environment Variables for GIF Optimization:**
+- `BCC_MAX_GIF_FPS=15` - Maximum frames per second for animated GIFs (default: 15). Set to 0 for unlimited.
+- `BCC_ENABLE_GIF_ANIMATIONS=0` - Disable all GIF animations globally (shows first frame only). Default: enabled.
 
 #### `<qrcode>` - QR Code Display
 Generates and displays a QR code from text, URL, or command output. Requires the `qrcode` Python library (installed by default on Batocera).

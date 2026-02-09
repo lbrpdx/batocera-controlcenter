@@ -204,6 +204,12 @@ class UICore:
         # Global focus management
         self._all_focusable_widgets = set()  # Track all widgets that can receive focus
         self._currently_focused_widget = None
+        
+        # Animated GIF optimization
+        self._active_animations = []  # Track active animated images
+        self._animations_paused = False  # Track if animations are paused
+        self._max_gif_fps = int(os.environ.get('BCC_MAX_GIF_FPS', '15'))  # Configurable max FPS
+        self._enable_gif_animations = os.environ.get('BCC_ENABLE_GIF_ANIMATIONS', '1') != '0'
 
     # ---- Window / CSS ----
     def build_window(self):
@@ -477,6 +483,98 @@ class UICore:
             debug_print(f"[CSS] CSS load failed: {e}")
             import traceback
             traceback.print_exc()
+
+    # ---- Animated GIF Control ----
+    def pause_animations(self):
+        """Pause all active GIF animations to save CPU"""
+        if self._animations_paused:
+            return
+        self._animations_paused = True
+        for img_widget in self._active_animations:
+            if img_widget and hasattr(img_widget, '_animation_timeout_id'):
+                # Stop the animation timeout
+                if img_widget._animation_timeout_id:
+                    try:
+                        GLib.source_remove(img_widget._animation_timeout_id)
+                    except Exception:
+                        pass
+                    img_widget._animation_timeout_id = None
+
+    def resume_animations(self):
+        """Resume all paused GIF animations"""
+        if not self._animations_paused:
+            return
+        self._animations_paused = False
+        for img_widget in self._active_animations:
+            if img_widget and hasattr(img_widget, '_animation'):
+                # Restart the animation with scaling parameters if available
+                target_width = getattr(img_widget, '_target_width', None)
+                target_height = getattr(img_widget, '_target_height', None)
+                self._start_animation_playback(img_widget, img_widget._animation, target_width, target_height)
+
+    def _start_animation_playback(self, img_widget, animation, target_width=None, target_height=None):
+        """Start playing an animation with frame rate limiting and optional scaling"""
+        if not animation or animation.is_static_image():
+            return
+        
+        # Calculate frame delay with FPS limiting
+        min_delay_ms = int(1000 / self._max_gif_fps) if self._max_gif_fps > 0 else 0
+        
+        # Determine if we need to scale frames
+        need_scaling = target_width or target_height
+        
+        def advance_frame():
+            if self._animations_paused:
+                return False  # Stop the timeout
+            
+            if not img_widget or not img_widget.get_realized():
+                return False  # Widget destroyed or not visible
+            
+            # Get the animation iterator
+            if not hasattr(img_widget, '_animation_iter'):
+                img_widget._animation_iter = animation.get_iter()
+            
+            iter = img_widget._animation_iter
+            
+            # Advance to next frame
+            iter.advance()
+            pixbuf = iter.get_pixbuf()
+            
+            # Scale frame if dimensions are specified
+            if need_scaling:
+                from gi.repository import GdkPixbuf
+                orig_width = pixbuf.get_width()
+                orig_height = pixbuf.get_height()
+                
+                if target_width and target_height:
+                    # Both specified
+                    pixbuf = pixbuf.scale_simple(target_width, target_height, GdkPixbuf.InterpType.BILINEAR)
+                elif target_width:
+                    # Only width specified, maintain aspect ratio
+                    aspect = orig_height / orig_width
+                    new_height = int(target_width * aspect)
+                    pixbuf = pixbuf.scale_simple(target_width, new_height, GdkPixbuf.InterpType.BILINEAR)
+                elif target_height:
+                    # Only height specified, maintain aspect ratio
+                    aspect = orig_width / orig_height
+                    new_width = int(target_height * aspect)
+                    pixbuf = pixbuf.scale_simple(new_width, target_height, GdkPixbuf.InterpType.BILINEAR)
+            
+            img_widget.set_from_pixbuf(pixbuf)
+            
+            # Get delay for next frame (in milliseconds)
+            delay = iter.get_delay_time()
+            
+            # Apply FPS limiting
+            if min_delay_ms > 0:
+                delay = max(delay, min_delay_ms)
+            
+            # Schedule next frame
+            img_widget._animation_timeout_id = GLib.timeout_add(delay, advance_frame)
+            return False  # Don't repeat this timeout (we schedule the next one)
+        
+        # Start the animation
+        advance_frame()
 
     # ---- Keyboard / Focus ----
     def _on_key_press(self, _w, ev: Gdk.EventKey):
@@ -1088,6 +1186,7 @@ class UICore:
             cb()
 
     def hide(self, *_a):
+        self.pause_animations()  # Pause GIF animations to save CPU
         self.window.hide()
         self._gamepads.stopThread()
         self.stop_refresh()
@@ -1105,6 +1204,7 @@ class UICore:
             _init_focus(self)
             return False
         GLib.timeout_add(50, delayed_init_focus)
+        self.resume_animations()  # Resume GIF animations
 
     def toggle_visibility(self, *_a):
         if self.window.is_visible():
@@ -2143,7 +2243,7 @@ class UICore:
 
 
     def build_img(self, parent_feat, sub, row_box, pack_end=False):
-        """Build an image widget from file path, URL, or ${...} command"""
+        """Build an image widget from file path, URL, or ${...} command (supports animated GIFs with CPU optimization)"""
         import urllib.request
         from gi.repository import GdkPixbuf
 
@@ -2151,6 +2251,10 @@ class UICore:
         width = sub.attrs.get("width", "")
         height = sub.attrs.get("height", "")
         refresh = float(sub.attrs.get("refresh", parent_feat.attrs.get("refresh", DEFAULT_REFRESH_SEC)))
+        
+        # Check if animations are enabled (can be disabled per-image or globally)
+        enable_animation = sub.attrs.get("animate", "true").lower() in ("true", "1", "yes")
+        enable_animation = enable_animation and self._enable_gif_animations
 
         # Parse width/height - handle both pixels and percentages
         def parse_dimension(value: str, reference_size: int = 100) -> int | None:
@@ -2205,31 +2309,67 @@ class UICore:
         # Register ID for img elements (they always produce visual content)
         register_element_id(sub, self.rendered_ids)
 
+        def is_gif(path_or_url: str) -> bool:
+            """Check if the path/URL points to a GIF file"""
+            return path_or_url.lower().endswith('.gif')
+
         def load_image(path_or_url: str):
-            """Load image from file path or URL"""
+            """Load image from file path or URL (supports animated GIFs)"""
             try:
                 path_or_url = path_or_url.strip()
                 if not path_or_url:
-                    return None
+                    return None, None
 
                 pixbuf = None
+                animation = None
 
                 # Check if it's a URL
                 if path_or_url.startswith(("http://", "https://")):
                     # Download from URL
                     with urllib.request.urlopen(path_or_url, timeout=5) as response:
                         data = response.read()
-                        loader = GdkPixbuf.PixbufLoader()
-                        loader.write(data)
-                        loader.close()
-                        pixbuf = loader.get_pixbuf()
+                        
+                        if is_gif(path_or_url) and enable_animation:
+                            # Load as animation for GIFs
+                            loader = GdkPixbuf.PixbufLoader()
+                            loader.write(data)
+                            loader.close()
+                            animation = loader.get_animation()
+                            if animation and not animation.is_static_image():
+                                # It's an animated GIF
+                                pixbuf = None
+                            else:
+                                # It's a static GIF, treat as regular image
+                                pixbuf = loader.get_pixbuf()
+                                animation = None
+                        else:
+                            # Load as static image
+                            loader = GdkPixbuf.PixbufLoader()
+                            loader.write(data)
+                            loader.close()
+                            pixbuf = loader.get_pixbuf()
                 else:
                     # Load from file
                     if os.path.exists(path_or_url):
-                        pixbuf = GdkPixbuf.Pixbuf.new_from_file(path_or_url)
+                        if is_gif(path_or_url) and enable_animation:
+                            # Try to load as animation first
+                            animation = GdkPixbuf.PixbufAnimation.new_from_file(path_or_url)
+                            if animation and animation.is_static_image():
+                                # It's a static GIF, get the static image
+                                pixbuf = animation.get_static_image()
+                                animation = None
+                        else:
+                            # Load as static image (or animation disabled)
+                            if is_gif(path_or_url):
+                                # Load first frame only
+                                animation = GdkPixbuf.PixbufAnimation.new_from_file(path_or_url)
+                                pixbuf = animation.get_static_image()
+                                animation = None
+                            else:
+                                pixbuf = GdkPixbuf.Pixbuf.new_from_file(path_or_url)
 
+                # Scale static images if needed
                 if pixbuf:
-                    # Scale if needed
                     orig_width = pixbuf.get_width()
                     orig_height = pixbuf.get_height()
 
@@ -2247,16 +2387,52 @@ class UICore:
                         new_width = int(target_height * aspect)
                         pixbuf = pixbuf.scale_simple(new_width, target_height, GdkPixbuf.InterpType.BILINEAR)
 
-                    return pixbuf
+                return pixbuf, animation
             except Exception as e:
                 debug_print(f"[IMG] Error loading image from '{path_or_url}': {e}")
-            return None
+            return None, None
 
         def update_image(path_or_url: str):
-            """Update the image widget"""
+            """Update the image widget (supports animated GIFs with CPU optimization)"""
             def do_load():
-                pixbuf = load_image(path_or_url) # None = erase previous image
-                GLib.idle_add(lambda pb=pixbuf: img.set_from_pixbuf(pb) or False)
+                pixbuf, animation = load_image(path_or_url)
+                
+                def set_image():
+                    # Clean up previous animation if any
+                    if hasattr(img, '_animation_timeout_id') and img._animation_timeout_id:
+                        try:
+                            GLib.source_remove(img._animation_timeout_id)
+                        except Exception:
+                            pass
+                        img._animation_timeout_id = None
+                    
+                    # Remove from active animations list
+                    if img in self._active_animations:
+                        self._active_animations.remove(img)
+                    
+                    if animation:
+                        # Store animation reference and scaling parameters
+                        img._animation = animation
+                        img._target_width = target_width
+                        img._target_height = target_height
+                        
+                        # Add to active animations list
+                        self._active_animations.append(img)
+                        
+                        # Start animation playback with FPS limiting and scaling
+                        if not self._animations_paused:
+                            self._start_animation_playback(img, animation, target_width, target_height)
+                        
+                    elif pixbuf:
+                        # Set static image
+                        img.set_from_pixbuf(pixbuf)
+                    else:
+                        # Clear image
+                        img.clear()
+                    return False
+                
+                GLib.idle_add(set_image)
+            
             # Load in background thread to avoid blocking
             threading.Thread(target=do_load, daemon=True).start()
 
