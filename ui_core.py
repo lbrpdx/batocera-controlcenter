@@ -211,6 +211,52 @@ class UICore:
         self._max_gif_fps = int(os.environ.get('BCC_MAX_GIF_FPS', '15'))  # Configurable max FPS
         self._enable_gif_animations = os.environ.get('BCC_ENABLE_GIF_ANIMATIONS', '1') != '0'
 
+    # Detect DPI (Thor bottom screen)
+    def _dpi_from_monitor(self, monitor: Gdk.Monitor) -> float | None:
+        try:
+            geo = monitor.get_geometry()
+            mm_width = monitor.get_width_mm() or 0
+            if mm_width > 0:
+                return geo.width / (mm_width / 25.4)
+        except Exception as e:
+            debug_print(f"[DPI] monitor DPI failed: {e}")
+        return None
+
+    # Actual detection
+    def _get_window_dpi(self, win: Gtk.Window) -> float | None:
+        try:
+            gdk_win = win.get_window()
+            if not gdk_win:
+                return None
+
+            display = gdk_win.get_display()
+            if not display:
+                return None
+
+            monitor = None
+            if hasattr(display, "get_monitor_at_window"):
+                monitor = display.get_monitor_at_window(gdk_win)
+
+            # Fallbacks if needed
+            if monitor is None and hasattr(display, "get_primary_monitor"):
+                monitor = display.get_primary_monitor()
+
+            if monitor:
+                dpi = self._dpi_from_monitor(monitor)
+                if dpi:
+                    return dpi
+
+            # Last resort: screen "logical" DPI
+            screen = win.get_screen()
+            if screen:
+                res = screen.get_resolution()
+                if res and res > 0:
+                    return res
+        except Exception as e:
+            debug_print(f"[DPI] _get_window_dpi failed: {e}")
+        return None
+
+
     # ---- Window / CSS ----
     def build_window(self):
         display = Gdk.Display.get_default()
@@ -238,7 +284,7 @@ class UICore:
         win.set_name("popup-root")
 
         x0, y0, sw, sh = get_primary_geometry()
-        
+        debug_print(f"[DPI] startup geometry:{sw}x{sh}")
         # Handle fullscreen mode
         if self.fullscreen:
             width, max_height = sw, sh
@@ -249,9 +295,7 @@ class UICore:
             width, max_height = self.window_size
             scale_class = "full" if width >= 1280 and max_height >= 720 else "small"
         else:
-            # Default sizing logic
             width, max_height = sw, sh
-            # small screens vs full size (>= 1280 x 720)
             scale_class = "small"
             if sw >= 1280:
                 width = int(sw * 0.90)
@@ -265,7 +309,8 @@ class UICore:
             if sh >= 1080:
                 max_height = int(sh * 0.80)
                 scale_class = "full"
-        
+        # This is the initial scale on app lauch, but before labwc potentially moves
+        # it to a different screen (Thor). It is then updated in on_map()
         win.get_style_context().add_class(f"scale-{scale_class}")
 
         # Store dimensions for positioning
@@ -330,6 +375,26 @@ class UICore:
 
             # On Wayland/Sway, use swaymsg to make window visible
             if is_wayland:
+                dpi = self._get_window_dpi(win)
+                debug_print(f"[DPI] Wayland DPI={dpi if dpi is not None else 'unknown'} initially for '{self._scale_class}' screens")
+
+                if dpi:
+                    old_class = self._scale_class
+                    # Simple thresholds – tweaked for your Thor, needs to be tested on other handhelds
+                    if dpi >= 200:
+                        new_class = "large"
+                    elif dpi >= 80:
+                        new_class = "full"
+                    else:
+                        new_class = "small"
+
+                    if new_class != old_class:
+                        ctx = win.get_style_context()
+                        ctx.remove_class(f"scale-{old_class}")
+                        ctx.add_class(f"scale-{new_class}")
+                        self._scale_class = new_class
+                        debug_print(f"[DPI] scale_class changed {old_class} -> {new_class}")
+
                 def sway_commands():
                     import subprocess
                     import time
@@ -3696,6 +3761,8 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool) -> Gtk.EventBox:
         cell_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3)  # Reduced spacing
         if core._scale_class == "small":
             cell_box.set_size_request(80, -1)  # Minimum width for grid alignment
+        elif core._scale_class == "large":
+            cell_box.set_size_size(300, -1)
         else:
             cell_box.set_size_request(200, -1)  # Minimum width for grid alignment
         cell_event.add(cell_box)
@@ -4401,6 +4468,8 @@ def _show_confirm_dialog(core: UICore, message: str, action: str, afterclick: st
     dialog.set_modal(True)
     if core._scale_class == "small":
         dialog.set_default_size(240, 120)
+    elif core._scale_class == "large":
+        dialog.set_default_size(540, 300)
     else:
         dialog.set_default_size(400, 200)
     dialog.set_decorated(False)
@@ -4428,6 +4497,7 @@ def _show_confirm_dialog(core: UICore, message: str, action: str, afterclick: st
 
     # Style the dialog window itself
     dialog.get_style_context().add_class("popup-root")
+    dialog.get_style_context().add_class(f"scale-{core._scale_class}")
     dialog.get_style_context().add_class("confirm-dialog")
 
     # Add frame for inner content (no action area with Gtk.Window!)
@@ -4438,6 +4508,8 @@ def _show_confirm_dialog(core: UICore, message: str, action: str, afterclick: st
     inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
     if core._scale_class == "small":
         inner.set_border_width(8)
+    elif core._scale_class == "large":
+        inner.set_border_width(30)
     else:
         inner.set_border_width(20)
     frame.add(inner)
@@ -4460,6 +4532,8 @@ def _show_confirm_dialog(core: UICore, message: str, action: str, afterclick: st
     cancel_btn.get_style_context().add_class("cc-button")
     if core._scale_class == "small":
         cancel_btn.set_size_request(80, -1)
+    elif core._scale_class == "large":
+        cancel_btn.set_size_request(120, -1)
     else:
         cancel_btn.set_size_request(100, -1)
     cancel_btn.set_can_focus(True)
@@ -4472,9 +4546,11 @@ def _show_confirm_dialog(core: UICore, message: str, action: str, afterclick: st
     confirm_btn = Gtk.Button.new_with_label(_("Confirm"))
     confirm_btn.get_style_context().add_class("cc-button")
     if core._scale_class == "small":
-        cancel_btn.set_size_request(80, -1)
+        confirm_btn.set_size_request(80, -1)
+    elif core._scale_class == "large":
+        confirm_btn.set_size_request(120, -1)
     else:
-        cancel_btn.set_size_request(100, -1)
+        confirm_btn.set_size_request(100, -1)
     confirm_btn.set_can_focus(True)
     # Explicitly prevent GTK from giving this button default focus
     confirm_btn.set_receives_default(False)
@@ -4623,6 +4699,8 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
     dialog.set_modal(True)
     if core._scale_class == "small":
         dialog.set_default_size(400, 300)
+    elif core._scale_class == "large":
+        dialog.set_default_size(800, 300)
     else:
         dialog.set_default_size(600, 500)
     dialog.set_decorated(False)
@@ -4650,6 +4728,7 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
 
     # Style the dialog window itself
     dialog.get_style_context().add_class("popup-root")
+    dialog.get_style_context().add_class(f"scale-{core._scale_class}")
     dialog.get_style_context().add_class("confirm-dialog")
 
     # Add frame for inner content (no action area with Gtk.Window!)
@@ -4660,6 +4739,8 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
     inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
     if core._scale_class == "small":
         inner.set_border_width(10)
+    elif core._scale_class == "large":
+        inner.set_border_width(30)
     else:
         inner.set_border_width(20)
     frame.add(inner)

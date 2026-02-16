@@ -1,9 +1,17 @@
 /* Batocera Control Center - Dark Theme (GTK3 CSS) */
 
 /* Global */
-* { font-size: 14pt; }
+.scale-small * {
+    font-size: 8px;
+}
 
-.scale-small * { font-size: 8pt; }
+.scale-full * {
+    font-size: 14px;
+}
+
+.scale-large * {
+    font-size: 22px;
+}
 
 .popup-root {
   background-color: #0f1115;
@@ -369,6 +377,11 @@ dialog .dialog-action-area,
 .scale-small .doc-viewer-text {
   font-size: 8pt;
   padding: 10px;
+}
+
+.scale-large .doc-viewer-text {
+    font-size: 22px;
+  padding: 30px;
 }
 
 .doc-viewer-text text {
