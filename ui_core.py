@@ -17,6 +17,10 @@ from gamepads import GamePads
 from DocViewer import DocViewer
 from log import debug_print, DEBUG
 
+# for wayland
+gi.require_version('GtkLayerShell', '0.1')
+from gi.repository import GtkLayerShell
+
 import locale
 _ = locale.gettext
 
@@ -321,8 +325,6 @@ class UICore:
         # on wayland, force the window as an overlay
         # and choose the 2nd screen if exists
         if is_wayland:
-            gi.require_version('GtkLayerShell', '0.1')
-            from gi.repository import GtkLayerShell
             GtkLayerShell.init_for_window(win)
             GtkLayerShell.set_layer(win, GtkLayerShell.Layer.OVERLAY)
             GtkLayerShell.set_keyboard_interactivity(win, False)
@@ -2343,7 +2345,7 @@ class UICore:
                 def docviewer_on_quit():
                     self.quit()
 
-                docviewer = DocViewer()
+                docviewer = DocViewer(self._is_wayland)
                 docviewer.open(self.window, file_path, docviewer_on_destroy, docviewer_on_quit)
                 self._handle_gamepad_action = docviewer.handle_gamepad_action
                 # Enable continuous actions for document viewer navigation
@@ -4535,18 +4537,33 @@ def _show_confirm_dialog(core: UICore, message: str, action: str, afterclick: st
 
     # Use Gtk.Window instead of Gtk.Dialog to avoid action area issues
     dialog = Gtk.Window()
-    
+
+    if core._is_wayland:
+        GtkLayerShell.init_for_window(dialog)
+        GtkLayerShell.set_layer(dialog, GtkLayerShell.Layer.OVERLAY)
+        GtkLayerShell.set_keyboard_interactivity(dialog, False)
+        # screen
+        display = Gdk.Display.get_default()
+        if display.get_n_monitors() == 1:
+            monitor_idx = 0
+        else:
+            monitor_idx = 1 # on batocera, 0 is the main screen, and 1 is the backglass (i'm not completly sure it is correct)
+        monitor = display.get_monitor(monitor_idx)
+        GtkLayerShell.set_monitor(dialog, monitor)
+
     # Track this dialog so it can be destroyed on timeout
     core._current_dialog = dialog
     dialog.set_transient_for(core.window)
     dialog.set_modal(True)
+    dialog.set_decorated(False)
+
     if core._scale_class == "small":
         dialog.set_default_size(240, 120)
     elif core._scale_class == "large":
         dialog.set_default_size(540, 300)
     else:
         dialog.set_default_size(400, 200)
-    dialog.set_decorated(False)
+
     dialog.set_resizable(False)
     dialog.set_type_hint(Gdk.WindowTypeHint.DIALOG)
     dialog.set_position(Gtk.WindowPosition.CENTER_ON_PARENT)
@@ -4766,7 +4783,20 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
     core._dialog_allows_timeout = True  # Allow inactivity timer to close window
     # Use Gtk.Window instead of Gtk.Dialog to avoid action area issues
     dialog = Gtk.Window()
-    
+
+    if core._is_wayland:
+        GtkLayerShell.init_for_window(dialog)
+        GtkLayerShell.set_layer(dialog, GtkLayerShell.Layer.OVERLAY)
+        GtkLayerShell.set_keyboard_interactivity(dialog, False)
+        # screen
+        display = Gdk.Display.get_default()
+        if display.get_n_monitors() == 1:
+            monitor_idx = 0
+        else:
+            monitor_idx = 1 # on batocera, 0 is the main screen, and 1 is the backglass (i'm not completly sure it is correct)
+        monitor = display.get_monitor(monitor_idx)
+        GtkLayerShell.set_monitor(dialog, monitor)
+
     # Track this dialog so it can be destroyed on timeout
     core._current_dialog = dialog
     dialog.set_transient_for(core.window)
