@@ -182,6 +182,28 @@ def _activate_widget(widget: Gtk.Widget):
         except Exception as e:
             debug_print(f"[ACTIVATE] Exception {e} for {widget}")
 
+# Parse width/height - handle both pixels and percentages
+def parse_dimension(value: str, reference_size: int = 100) -> int | None:
+    """Parse dimension value, supporting both pixels and percentages"""
+    if not value:
+        return None
+
+    value = value.strip()
+    if value.endswith('%'):
+        # Parse percentage
+        try:
+            percentage = float(value[:-1])
+            return int(reference_size * percentage / 100)
+        except ValueError:
+            return None
+    else:
+        # Parse pixels
+        try:
+            return int(value)
+        except ValueError:
+            return None
+
+#---------------------------------- main class
 class UICore:
     def __init__(self, css_path: str, fullscreen: bool = False, window_size: tuple[int, int] | None = None):
         self.css_path = css_path
@@ -255,6 +277,36 @@ class UICore:
         except Exception as e:
             debug_print(f"[DPI] _get_window_dpi failed: {e}")
         return None
+
+    # --- With dynamic DPI, need a "physical-ish" pixels for %-based sizing
+    def get_reference_dimensions(self) -> tuple[int, int]:
+        # Conservative defaults
+        ref_w, ref_h = 800, 600
+
+        try:
+            win = self.window
+            if win and win.get_realized():
+                gdk_win = win.get_window()
+                alloc = win.get_allocation()
+
+                logical_w = alloc.width
+                logical_h = alloc.height
+
+                scale_factor = gdk_win.get_scale_factor() if gdk_win is not None else 1
+                if scale_factor <= 0:
+                    scale_factor = 1
+
+                ref_w = int(logical_w * scale_factor)
+                ref_h = int(logical_h * scale_factor)
+
+            elif hasattr(self, "_window_width") and hasattr(self, "_max_height"):
+                # Fallback to what you already compute in build_window
+                ref_w = int(self._window_width)
+                ref_h = int(self._max_height)
+        except Exception as e:
+            debug_print(f"[REFSIZE] Failed to compute reference size: {e}")
+
+        return ref_w, ref_h
 
 
     # ---- Window / CSS ----
@@ -2321,36 +2373,8 @@ class UICore:
         enable_animation = sub.attrs.get("animate", "true").lower() in ("true", "1", "yes")
         enable_animation = enable_animation and self._enable_gif_animations
 
-        # Parse width/height - handle both pixels and percentages
-        def parse_dimension(value: str, reference_size: int = 100) -> int | None:
-            """Parse dimension value, supporting both pixels and percentages"""
-            if not value:
-                return None
-            
-            value = value.strip()
-            if value.endswith('%'):
-                # Parse percentage
-                try:
-                    percentage = float(value[:-1])
-                    return int(reference_size * percentage / 100)
-                except ValueError:
-                    return None
-            else:
-                # Parse pixels
-                try:
-                    return int(value)
-                except ValueError:
-                    return None
-        
-        # Use actual window dimensions if available, otherwise use reasonable defaults
-        if hasattr(self, '_window_width') and hasattr(self, '_max_height'):
-            reference_width = self._window_width
-            reference_height = self._max_height
-        else:
-            # Fallback to reasonable defaults
-            reference_width = 800
-            reference_height = 600
-        
+        reference_width, reference_height = self.get_reference_dimensions()
+
         target_width = parse_dimension(width, reference_width)
         target_height = parse_dimension(height, reference_height)
 
@@ -2546,35 +2570,7 @@ class UICore:
         qrcode_font = sub.attrs.get("font")
         footer_text = sub.attrs.get("text")
 
-        # Parse width/height - handle both pixels and percentages
-        def parse_dimension(value: str, reference_size: int = 100) -> int | None:
-            """Parse dimension value, supporting both pixels and percentages"""
-            if not value:
-                return None
-            
-            value = value.strip()
-            if value.endswith('%'):
-                # Parse percentage
-                try:
-                    percentage = float(value[:-1])
-                    return int(reference_size * percentage / 100)
-                except ValueError:
-                    return None
-            else:
-                # Parse pixels
-                try:
-                    return int(value)
-                except ValueError:
-                    return None
-        
-        # Use actual window dimensions if available, otherwise use reasonable defaults
-        if hasattr(self, '_window_width') and hasattr(self, '_max_height'):
-            reference_width = self._window_width
-            reference_height = self._max_height
-        else:
-            # Fallback to reasonable defaults
-            reference_width = 800
-            reference_height = 600
+        reference_width, reference_height = self.get_reference_dimensions()
 
         # Parse width/height - QR codes are square, so if only one dimension is specified, use it for both
         # If neither is specified, default to 160x160
