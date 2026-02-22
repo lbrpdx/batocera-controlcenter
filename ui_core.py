@@ -17,6 +17,10 @@ from gamepads import GamePads
 from DocViewer import DocViewer
 from log import debug_print, DEBUG
 
+# for wayland
+gi.require_version('GtkLayerShell', '0.1')
+from gi.repository import GtkLayerShell
+
 import locale
 _ = locale.gettext
 
@@ -318,49 +322,117 @@ class UICore:
         win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
         win.set_title(WINDOW_TITLE)
 
+        # on wayland, force the window as an overlay
+        # and choose the 2nd screen if exists
+        if is_wayland:
+            GtkLayerShell.init_for_window(win)
+            GtkLayerShell.set_layer(win, GtkLayerShell.Layer.OVERLAY)
+            GtkLayerShell.set_keyboard_interactivity(win, False)
+
+            display = Gdk.Display.get_default()
+            if display.get_n_monitors() == 1:
+                monitor_idx = 0
+            else:
+                monitor_idx = 1 # on batocera, 0 is the main screen, and 1 is the backglass (i'm not completly sure it is correct)
+            monitor = display.get_monitor(monitor_idx)
+            GtkLayerShell.set_monitor(win, monitor)
+
+            # screen size on wayland
+            GtkLayerShell.set_anchor(win, GtkLayerShell.Edge.TOP, True)
+            GtkLayerShell.set_anchor(win, GtkLayerShell.Edge.BOTTOM, True)
+            GtkLayerShell.set_anchor(win, GtkLayerShell.Edge.LEFT, True)
+            GtkLayerShell.set_anchor(win, GtkLayerShell.Edge.RIGHT, True)
+
         # Undecorated on both X11 and Wayland
         win.set_decorated(False)
 
         if is_wayland:
-            win.set_type_hint(Gdk.WindowTypeHint.NORMAL)
+            geometry = monitor.get_geometry()
+
+            if self.fullscreen:
+                width = geometry.width
+                height =  geometry.height
+                max_height = height
+                x0 = 0
+                y0 = 0
+                sw = width
+                sh = height
+                scale_class = "full"
+            else:
+                if self.window_size:
+                    width, height = self.window_size
+                    scale_class = "full" if width >= 1280 and max_height >= 720 else "small"
+                else:
+                    width, height = geometry.width, geometry.height
+                    sw = width
+                    sh = height
+                    scale_class = "small"
+                    if sw >= 1280:
+                        width = int(sw * 0.90)
+                        scale_class = "full"
+                    if sw >= 1920:
+                        width = int(sw * 0.70)
+                        scale_class = "full"
+                    if sh >= 720:
+                        height = int(sh * 0.95)
+                        scale_class = "full"
+                    if sh >= 1080:
+                        height = int(sh * 0.80)
+                        scale_class = "full"
+
+                # apply variables
+                max_height = height
+                x0 = (geometry.width-width) // 2
+                y0 = (geometry.height-height) // 2
+                sw = width
+                sh = height
+                width_margin = x0
+                height_margin = y0
+
+                # apply margin
+                GtkLayerShell.set_margin(win, GtkLayerShell.Edge.TOP, height_margin)
+                GtkLayerShell.set_margin(win, GtkLayerShell.Edge.BOTTOM, height_margin)
+                GtkLayerShell.set_margin(win, GtkLayerShell.Edge.LEFT, width_margin)
+                GtkLayerShell.set_margin(win, GtkLayerShell.Edge.RIGHT, width_margin)
         else:
+            # xorg
             win.set_type_hint(Gdk.WindowTypeHint.DIALOG)
             win.set_keep_above(True)
+            win.set_resizable(True)
+            win.set_skip_taskbar_hint(False)
+            win.set_modal(False)
+            
+            x0, y0, sw, sh = get_primary_geometry()
+            debug_print(f"[DPI] startup geometry:{sw}x{sh}")
+            # Handle fullscreen mode
+            if self.fullscreen:
+                width, max_height = sw, sh
+                scale_class = "full"
+                win.set_decorated(False)  # Remove window decorations for fullscreen
+            # Handle custom window size
+            elif self.window_size:
+                width, max_height = self.window_size
+                scale_class = "full" if width >= 1280 and max_height >= 720 else "small"
+            else:
+                width, max_height = sw, sh
+                scale_class = "small"
+                if sw >= 1280:
+                    width = int(sw * 0.90)
+                    scale_class = "full"
+                if sw >= 1920:
+                    width = int(sw * 0.70)
+                    scale_class = "full"
+                if sh >= 720:
+                    max_height = int(sh * 0.95)
+                    scale_class = "full"
+                if sh >= 1080:
+                    max_height = int(sh * 0.80)
+                    scale_class = "full"
 
-        win.set_resizable(True)
-        win.set_skip_taskbar_hint(False)
-        win.set_accept_focus(True)
-        win.set_focus_on_map(True)
-        win.set_modal(False)
+        # style
         win.get_style_context().add_class("popup-root")
         win.set_name("popup-root")
 
-        x0, y0, sw, sh = get_primary_geometry()
-        debug_print(f"[DPI] startup geometry:{sw}x{sh}")
-        # Handle fullscreen mode
-        if self.fullscreen:
-            width, max_height = sw, sh
-            scale_class = "full"
-            win.set_decorated(False)  # Remove window decorations for fullscreen
-        # Handle custom window size
-        elif self.window_size:
-            width, max_height = self.window_size
-            scale_class = "full" if width >= 1280 and max_height >= 720 else "small"
-        else:
-            width, max_height = sw, sh
-            scale_class = "small"
-            if sw >= 1280:
-                width = int(sw * 0.90)
-                scale_class = "full"
-            if sw >= 1920:
-                width = int(sw * 0.70)
-                scale_class = "full"
-            if sh >= 720:
-                max_height = int(sh * 0.95)
-                scale_class = "full"
-            if sh >= 1080:
-                max_height = int(sh * 0.80)
-                scale_class = "full"
         # This is the initial scale on app lauch, but before labwc potentially moves
         # it to a different screen (Thor). It is then updated in on_map()
         win.get_style_context().add_class(f"scale-{scale_class}")
@@ -375,7 +447,8 @@ class UICore:
         self._scale_class = scale_class
 
         # Set default size - use max_height as starting point
-        win.set_default_size(width, max_height)
+        if not is_wayland:
+            win.set_default_size(width, max_height)
 
         # Set geometry hints for both X11 and Wayland - defer to avoid blocking
         def set_geometry_hints():
@@ -397,7 +470,8 @@ class UICore:
             return False
         
         # Defer geometry hints to avoid blocking window creation
-        GLib.idle_add(set_geometry_hints)
+        if not is_wayland:
+            GLib.idle_add(set_geometry_hints)
 
         # Store for later use
         self._is_wayland = is_wayland
@@ -1419,7 +1493,7 @@ class UICore:
         def start_gamepad_delayed():
             self._gamepads.startThread(self._handle_gamepad_action_call)
             return False
-        
+
         # Start gamepad after window is shown
         GLib.timeout_add(50, start_gamepad_delayed)
 
@@ -2271,7 +2345,7 @@ class UICore:
                 def docviewer_on_quit():
                     self.quit()
 
-                docviewer = DocViewer()
+                docviewer = DocViewer(self._is_wayland)
                 docviewer.open(self.window, file_path, docviewer_on_destroy, docviewer_on_quit)
                 self._handle_gamepad_action = docviewer.handle_gamepad_action
                 # Enable continuous actions for document viewer navigation
@@ -4463,18 +4537,33 @@ def _show_confirm_dialog(core: UICore, message: str, action: str, afterclick: st
 
     # Use Gtk.Window instead of Gtk.Dialog to avoid action area issues
     dialog = Gtk.Window()
-    
+
+    if core._is_wayland:
+        GtkLayerShell.init_for_window(dialog)
+        GtkLayerShell.set_layer(dialog, GtkLayerShell.Layer.OVERLAY)
+        GtkLayerShell.set_keyboard_interactivity(dialog, False)
+        # screen
+        display = Gdk.Display.get_default()
+        if display.get_n_monitors() == 1:
+            monitor_idx = 0
+        else:
+            monitor_idx = 1 # on batocera, 0 is the main screen, and 1 is the backglass (i'm not completly sure it is correct)
+        monitor = display.get_monitor(monitor_idx)
+        GtkLayerShell.set_monitor(dialog, monitor)
+
     # Track this dialog so it can be destroyed on timeout
     core._current_dialog = dialog
     dialog.set_transient_for(core.window)
     dialog.set_modal(True)
+    dialog.set_decorated(False)
+
     if core._scale_class == "small":
         dialog.set_default_size(240, 120)
     elif core._scale_class == "large":
         dialog.set_default_size(540, 300)
     else:
         dialog.set_default_size(400, 200)
-    dialog.set_decorated(False)
+
     dialog.set_resizable(False)
     dialog.set_type_hint(Gdk.WindowTypeHint.DIALOG)
     dialog.set_position(Gtk.WindowPosition.CENTER_ON_PARENT)
@@ -4694,7 +4783,20 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
     core._dialog_allows_timeout = True  # Allow inactivity timer to close window
     # Use Gtk.Window instead of Gtk.Dialog to avoid action area issues
     dialog = Gtk.Window()
-    
+
+    if core._is_wayland:
+        GtkLayerShell.init_for_window(dialog)
+        GtkLayerShell.set_layer(dialog, GtkLayerShell.Layer.OVERLAY)
+        GtkLayerShell.set_keyboard_interactivity(dialog, False)
+        # screen
+        display = Gdk.Display.get_default()
+        if display.get_n_monitors() == 1:
+            monitor_idx = 0
+        else:
+            monitor_idx = 1 # on batocera, 0 is the main screen, and 1 is the backglass (i'm not completly sure it is correct)
+        monitor = display.get_monitor(monitor_idx)
+        GtkLayerShell.set_monitor(dialog, monitor)
+
     # Track this dialog so it can be destroyed on timeout
     core._current_dialog = dialog
     dialog.set_transient_for(core.window)

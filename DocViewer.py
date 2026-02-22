@@ -15,13 +15,19 @@ import urllib.request
 import tempfile
 import subprocess
 
+# for wayland
+gi.require_version('GtkLayerShell', '0.1')
+from gi.repository import GtkLayerShell
+from gi.repository import Gdk
+
 import locale
 _ = locale.gettext
 
 class DocViewer:
 
-    def __init__(self):
+    def __init__(self, is_wayland):
         self._handle_gamepad_action = None
+        self._is_wayland = is_wayland
 
     def handle_gamepad_action(self, action: str):
         if self._handle_gamepad_action is not None:
@@ -94,8 +100,24 @@ class DocViewer:
     
         # Create fullscreen window
         viewer = Gtk.Window()
+
+        if self._is_wayland:
+            GtkLayerShell.init_for_window(viewer)
+            GtkLayerShell.set_layer(viewer, GtkLayerShell.Layer.OVERLAY)
+            GtkLayerShell.set_keyboard_interactivity(viewer, False)
+            # screen
+            display = Gdk.Display.get_default()
+            monitor = display.get_monitor(0) # on batocera, 0 is the main screen, and 1 is the backglass (i'm not completly sure it is correct)
+            GtkLayerShell.set_monitor(viewer, monitor)
+            # screen size on wayland
+            GtkLayerShell.set_anchor(viewer, GtkLayerShell.Edge.TOP, True)
+            GtkLayerShell.set_anchor(viewer, GtkLayerShell.Edge.BOTTOM, True)
+            GtkLayerShell.set_anchor(viewer, GtkLayerShell.Edge.LEFT, True)
+            GtkLayerShell.set_anchor(viewer, GtkLayerShell.Edge.RIGHT, True)
+
         viewer.set_decorated(False)
-        viewer.fullscreen()
+        if not self._is_wayland:
+            viewer.fullscreen()
         viewer.set_modal(True)
         viewer.set_transient_for(parent_window)
         viewer.get_style_context().add_class("popup-root")
