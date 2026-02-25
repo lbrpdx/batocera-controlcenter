@@ -18,8 +18,11 @@ from DocViewer import DocViewer
 from log import debug_print, DEBUG
 
 # for wayland
-gi.require_version('GtkLayerShell', '0.1')
-from gi.repository import GtkLayerShell
+try:
+    gi.require_version('GtkLayerShell', '0.1')
+    from gi.repository import GtkLayerShell
+except:
+    pass
 
 import locale
 _ = locale.gettext
