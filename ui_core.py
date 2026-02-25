@@ -362,10 +362,15 @@ class UICore:
                 if self.window_size:
                     width, height = self.window_size
                     scale_class = "full" if width >= 1280 and max_height >= 720 else "small"
+                    sw, sh = width, height
                 else:
                     width, height = geometry.width, geometry.height
-                    sw = width
-                    sh = height
+                    # Assumption: landcape before on_map()
+                    if width >= height:
+                        sw, sh = width, height
+                    else:
+                        sh, sw = width, height
+
                     scale_class = "small"
                     if sw >= 1280:
                         width = int(sw * 0.90)
@@ -380,20 +385,23 @@ class UICore:
                         height = int(sh * 0.80)
                         scale_class = "full"
 
+                debug_print(f"[DPI] Wayland BCC win:{width}x{height} screen:{sw}x{sh}")
+
                 # apply variables
-                max_height = height
-                x0 = (geometry.width-width) // 2
-                y0 = (geometry.height-height) // 2
+                max_height = sh
+                x0 = (sw-width) // 2
+                y0 = (sh-height) // 5
                 sw = width
                 sh = height
                 width_margin = x0
                 height_margin = y0
 
-                # apply margin
-                GtkLayerShell.set_margin(win, GtkLayerShell.Edge.TOP, height_margin)
-                GtkLayerShell.set_margin(win, GtkLayerShell.Edge.BOTTOM, height_margin)
-                GtkLayerShell.set_margin(win, GtkLayerShell.Edge.LEFT, width_margin)
-                GtkLayerShell.set_margin(win, GtkLayerShell.Edge.RIGHT, width_margin)
+            debug_print(f"[DPI] Wayland startup geometry:{sw}x{sh} margins:{width_margin}x{height_margin}")
+            # apply margin
+            GtkLayerShell.set_margin(win, GtkLayerShell.Edge.TOP, height_margin)
+            GtkLayerShell.set_margin(win, GtkLayerShell.Edge.BOTTOM, 4*height_margin)
+            GtkLayerShell.set_margin(win, GtkLayerShell.Edge.LEFT, width_margin)
+            GtkLayerShell.set_margin(win, GtkLayerShell.Edge.RIGHT, width_margin)
         else:
             # xorg
             win.set_type_hint(Gdk.WindowTypeHint.DIALOG)
@@ -403,7 +411,7 @@ class UICore:
             win.set_modal(False)
             
             x0, y0, sw, sh = get_primary_geometry()
-            debug_print(f"[DPI] startup geometry:{sw}x{sh}")
+            debug_print(f"[DPI] X11 startup geometry:{sw}x{sh}")
             # Handle fullscreen mode
             if self.fullscreen:
                 width, max_height = sw, sh
@@ -499,28 +507,27 @@ class UICore:
             win.show_all()
             win.present()
 
-            # On Wayland/Sway, use swaymsg to make window visible
+            dpi = self._get_window_dpi(win)
+            debug_print(f"[DPI] {"Wayland" if is_wayland else "X11"} DPI={int(dpi) if dpi is not None else 'unknown'} initially for '{self._scale_class}' screens")
+
+            if dpi:
+                old_class = self._scale_class
+                # Simple thresholds – tweaked for your Thor, needs to be tested on other handhelds
+                if dpi >= 140:
+                    new_class = "large"
+                elif dpi >= 40:
+                    new_class = "full"
+                else:
+                    new_class = "small"
+
+                if new_class != old_class:
+                    ctx = win.get_style_context()
+                    ctx.remove_class(f"scale-{old_class}")
+                    ctx.add_class(f"scale-{new_class}")
+                    self._scale_class = new_class
+                    debug_print(f"[DPI] scale_class changed {old_class} -> {new_class}")
+
             if is_wayland:
-                dpi = self._get_window_dpi(win)
-                debug_print(f"[DPI] Wayland DPI={dpi if dpi is not None else 'unknown'} initially for '{self._scale_class}' screens")
-
-                if dpi:
-                    old_class = self._scale_class
-                    # Simple thresholds – tweaked for your Thor, needs to be tested on other handhelds
-                    if dpi >= 200:
-                        new_class = "large"
-                    elif dpi >= 80:
-                        new_class = "full"
-                    else:
-                        new_class = "small"
-
-                    if new_class != old_class:
-                        ctx = win.get_style_context()
-                        ctx.remove_class(f"scale-{old_class}")
-                        ctx.add_class(f"scale-{new_class}")
-                        self._scale_class = new_class
-                        debug_print(f"[DPI] scale_class changed {old_class} -> {new_class}")
-
                 def sway_commands():
                     import subprocess
                     import time

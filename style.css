@@ -2,15 +2,15 @@
 
 /* Global */
 .scale-small * {
-    font-size: 8px;
+    font-size: 10px;
 }
 
 .scale-full * {
-    font-size: 14px;
+    font-size: 16px;
 }
 
 .scale-large * {
-    font-size: 22px;
+    font-size: 24px;
 }
 
 .popup-root {
