@@ -352,7 +352,7 @@ class GamePads:
                     else:
                         bornemin = abs_info.min -1 # can't reach it
                         bornemax = center
-                        debug_print(f"[GAMEPAD] Axis {code} non-centered deadzone: {bornemin} to {bornemax} (center: {center}, threshold: {threshold}, range: {abs_info.min}-{abs_info.max})")
+                        debug_print(f"[GAMEPAD] Axis {code} non-centered deadzone: {bornemin} to {bornemax} (center: {center}, range: {abs_info.min}-{abs_info.max})")
                     axis_infos[dev.fd][code] =  { "bornemin": bornemin, "bornemax": bornemax }
                     
                     # Initialize axis state properly using the same logic as event handling
