@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # controlcenter.py — Batocera Control Center
 # This file is part of the batocera distribution (https://batocera.org).
 # Copyright (c) 2025-2026 lbrpdx for the Batocera team
@@ -13,12 +12,6 @@ import os
 import sys
 import signal
 
-# Add script directory to path so imports work from anywhere
-script_path = os.path.realpath(__file__)
-script_dir = os.path.dirname(script_path)
-if script_dir not in sys.path:
-    sys.path.insert(0, script_dir)
-
 os.environ.setdefault("NO_AT_BRIDGE", "1")
 
 import gi
@@ -26,9 +19,9 @@ gi.require_version('Gtk', '3.0')
 gi.require_version('Gdk', '3.0')
 from gi.repository import Gtk
 
-from xml_utils import parse_xml, validate_xml
-from ui_core import ControlCenterApp
-from log import debug_print, DEBUG
+from .xml_utils import parse_xml, validate_xml
+from .ui_core import ControlCenterApp
+from .log import debug_print, DEBUG
 
 import locale
 
@@ -133,11 +126,11 @@ def main():
 
     # If no XML path specified, search in priority order
     if xml_path is None:
-        xml_path = find_file("controlcenter.xml", os.path.join(script_dir, "controlcenter.xml"))
+        xml_path = find_file("controlcenter.xml", os.path.join(script_dir, "data", "controlcenter.xml"))
 
     # If no CSS path specified, search in priority order
     if css_path is None:
-        css_path = find_file("style.css", os.path.join(script_dir, "style.css"))
+        css_path = find_file("style.css", os.path.join(script_dir, "data", "style.css"))
 
     if not os.path.exists(xml_path):
         sys.stderr.write(f"ERROR: XML file not found: {xml_path}\n")
@@ -162,7 +155,3 @@ def main():
     debug_print(f"[STARTUP] app={app}")
     app_instance[0] = app  # Store for signal handler
     app.run()
-
-if __name__ == "__main__":
-    main()
-

@@ -11,11 +11,12 @@ import os
 import threading
 import time
 import gi
-gi.require_version('Gtk', '3.0'); gi.require_version('Gdk', '3.0')
+gi.require_version('Gtk', '3.0')
+gi.require_version('Gdk', '3.0')
 from gi.repository import Gtk, Gdk, GLib, Pango
-from gamepads import GamePads
-from DocViewer import DocViewer
-from log import debug_print, DEBUG
+from .gamepads import GamePads
+from .doc_viewer import DocViewer
+from .log import debug_print, DEBUG
 
 # for wayland
 try:
@@ -37,8 +38,8 @@ try:
 except Exception:
     EVDEV_AVAILABLE = False
 
-from refresh import RefreshTask, DEFAULT_REFRESH_SEC, Debouncer
-from shell import run_shell_capture, normalize_bool_str, get_primary_geometry, expand_command_string
+from .refresh import RefreshTask, DEFAULT_REFRESH_SEC, Debouncer
+from .shell import run_shell_capture, normalize_bool_str, get_primary_geometry, expand_command_string
 
 # handle_afterclick_before : actions to do before the call
 # handle_afterclick_after  : actions to do after the call

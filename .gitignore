@@ -1,0 +1,11 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+
+# Distribution / packaging
+dist/
+
+# Environments
+.venv*
+
+# Ruff
+.ruff_cache/

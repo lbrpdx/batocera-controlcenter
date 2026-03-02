@@ -1,0 +1,24 @@
+[project]
+name = "batocera-controlcenter"
+version = "0.2.0"
+description = "Add your description here"
+readme = "README.md"
+authors = []
+requires-python = "==3.14.5"
+# These must be the same as the batocera versions
+dependencies = [
+    "pygobject == 3.54.5",
+    "evdev==1.9.3; sys_platform == 'linux'",
+    "pyudev==0.24.4; sys_platform == 'linux'",
+]
+
+[project.scripts]
+batocera-controlcenter-app = "batocera_controlcenter.controlcenter:main"
+batocera-controlcenter = "batocera_controlcenter.controlcenter:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+config-settings-package = { pygobject-stubs = { config = "Gtk3,Gdk3" } }
