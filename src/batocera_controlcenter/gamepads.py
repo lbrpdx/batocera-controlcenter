@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import threading
-from log import debug_print, DEBUG
+from .log import debug_print, DEBUG
 
 from gi.repository import GLib
 

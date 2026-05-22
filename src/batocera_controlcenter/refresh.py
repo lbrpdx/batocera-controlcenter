@@ -9,7 +9,7 @@
 # YOU MUST KEEP THIS HEADER AS IT IS
 import threading
 from gi.repository import GLib
-from shell import run_shell_capture
+from .shell import run_shell_capture
 
 DEFAULT_REFRESH_SEC = 0  # no refresh by default (set refresh="1.0" on elements that need updates ever 1sec)
 

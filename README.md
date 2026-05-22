@@ -18,14 +18,18 @@ A flexible, XML-driven control panel for Batocera that provides an on-screen int
 ## Quick Start
 
 ```bash
+# Set up the virtual environment (optional but recommended)
+uv sync
+source .venv/bin/activate
+
 # Run with default configuration
-./controlcenter.py
+batocera-controlcenter
 
 # Run with custom XML and CSS
-./controlcenter.py /path/to/config.xml /path/to/style.css
+batocera-controlcenter /path/to/config.xml /path/to/style.css
 
 # Run with 10-second inactivity timeout
-./controlcenter.py controlcenter.xml style.css 10
+batocera-controlcenter controlcenter.xml style.css 10
 ```
 
 ## File Locations
@@ -34,14 +38,14 @@ When run without arguments, the application searches for configuration files in 
 
 1. **User overrides**: `/userdata/system/configs/controlcenter/`
 2. **System defaults**: `/usr/share/batocera/controlcenter/`
-3. **Local directory**: Same directory as `controlcenter.py`
+3. **Pacakge data directory**: `data` directory within the python package
 
 This allows users to customize their configuration without modifying system files.
 
 ## Command Line Parameters
 
 ```
-./controlcenter.py [--fullscreen] [--window WIDTHxHEIGHT] [--hidden] [timeout] [xml_path] [css_path]
+batocera-controlcenter [--fullscreen] [--window WIDTHxHEIGHT] [--hidden] [timeout] [xml_path] [css_path]
 ```
 
 **Options:**
@@ -59,19 +63,19 @@ This allows users to customize their configuration without modifying system file
 **Examples:**
 ```bash
 # Run in fullscreen mode
-./controlcenter.py --fullscreen
+batocera-controlcenter --fullscreen
 
 # Run with custom window size
-./controlcenter.py --window 1024x768
+batocera-controlcenter --window 1024x768
 
 # Run fullscreen with 30-second timeout
-./controlcenter.py --fullscreen 30
+batocera-controlcenter --fullscreen 30
 
 # Run with custom size and configuration files
-./controlcenter.py --window 800x600 config.xml style.css
+batocera-controlcenter --window 800x600 config.xml style.css
 
 # Start hidden (can be shown later with SIGUSR1)
-./controlcenter.py --hidden
+batocera-controlcenter --hidden
 ```
 
 **Window Modes:**
@@ -1033,14 +1037,23 @@ On Wayland/Sway, the window uses a special technique to ensure visibility:
 
 ```
 batocera-controlcenter/
-├── controlcenter.py     # Main entry point
-├── ui_core.py           # UI rendering and window management
-├── xml_utils.py         # XML parsing and validation
-├── shell.py             # Shell command execution utilities
-├── refresh.py           # Background refresh tasks
-├── controlcenter.xml    # Default UI configuration
-├── style.css            # Default stylesheet
-└── README.md            # This file
+├── src/
+│   └── batocera_controlcenter/
+│       ├── data/
+│       │   ├── controlcenter.xml  # Default UI configuration
+│       │   └── style.css          # Default stylesheet
+│       ├── __init__.py
+│       ├── controlcenter.py       # Main entry point
+│       ├── doc_viewer.py          # PDF/image/document viewer
+│       ├── gamepads.py            # Gamepad input handling
+│       ├── log.py                 # Debug logging utilities
+│       ├── refresh.py             # Background refresh tasks
+│       ├── shell.py               # Shell command execution utilities
+│       ├── ui_core.py             # UI rendering and window management
+│       └── xml_utils.py           # XML parsing and validation
+├── pyproject.toml
+├── uv.lock
+└── README.md                      # This file
 ```
 
 ### Adding New Control Types
@@ -1054,16 +1067,16 @@ batocera-controlcenter/
 
 ```bash
 # Test with custom config
-./controlcenter.py test.xml test.css
+batocera-controlcenter test.xml test.css
 
 # Test with auto-close
-./controlcenter.py test.xml test.css 5
+batocera-controlcenter test.xml test.css 5
 
 # Test on X11
-DISPLAY=:0 ./controlcenter.py
+DISPLAY=:0 batocera-controlcenter
 
 # Test on Wayland
-WAYLAND_DISPLAY=wayland-0 ./controlcenter.py
+WAYLAND_DISPLAY=wayland-0 batocera-controlcenter
 ```
 
 ### Debugging
@@ -1076,7 +1089,7 @@ Enable debug output by checking the console. The application prints:
 
 ## Requirements
 
-- Python 3.7+
+- Python 3.14.5
 - GTK 3.0
 - GLib
 - python-evdev (for gamepad support)
