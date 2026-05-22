@@ -530,7 +530,10 @@ class UICore:
             if dpi:
                 old_class = self._scale_class
                 # Simple thresholds – tweaked for your Thor, needs to be tested on other handhelds
-                if dpi >= 140:
+                # Force small scale if the display resolution is physically low
+                if self._window_width < 1024 or self._max_height < 600:
+                    new_class = "small"
+                elif dpi >= 140:
                     new_class = "large"
                 elif dpi >= 40:
                     new_class = "full"
