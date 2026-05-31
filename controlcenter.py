@@ -12,6 +12,7 @@
 import os
 import sys
 import signal
+import time
 
 # Add script directory to path so imports work from anywhere
 script_path = os.path.realpath(__file__)
@@ -62,6 +63,9 @@ def main():
     # Will be set after app is created
     app_instance = [None]
 
+    last_toggle_time = [0.0]
+    TOGGLE_COOLDOWN = 1.0
+
     def signal_handler(*_):
         if app_instance[0]:
             app_instance[0].core.quit()
@@ -71,6 +75,14 @@ def main():
 
     # show/hide the main window
     def signal_handler_usr1(*_):
+        now = time.monotonic()
+
+        # ignore quick repeated toggle requests
+        if now - last_toggle_time[0] < TOGGLE_COOLDOWN:
+            return
+
+        last_toggle_time[0] = now
+
         if app_instance[0]:
             app_instance[0].core.toggle_visibility()
 

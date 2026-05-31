@@ -368,6 +368,9 @@ class GamePads:
 
         # focus require that hotkeys down are received by underlaying apply
         # to not cause issue (retroarch for example think that hotkey remains down, then right alone forwards)
+        # give hotkeygen time to process the hotkey release before bcc grabs device
+        time.sleep(0.25)
+
         self._grab_devices()
         self._gamepad_running = True
 
