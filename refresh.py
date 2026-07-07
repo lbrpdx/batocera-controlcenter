@@ -7,11 +7,33 @@
 # as published by the Free Software Foundation, version 3.
 #
 # YOU MUST KEEP THIS HEADER AS IT IS
+import queue
 import threading
 from gi.repository import GLib
-from shell import run_shell_capture
+from shell import run_shell_capture_cached
 
 DEFAULT_REFRESH_SEC = 0  # no refresh by default (set refresh="1.0" on elements that need updates ever 1sec)
+
+# Shared pool of persistent daemon workers for RefreshTask ticks, so that
+# refreshing ~20 widgets doesn't mean spawning ~20 new OS threads every
+# tick. Workers block on the queue (no polling) so an idle pool costs
+# essentially nothing.
+_WORKER_COUNT = 4
+_work_queue: "queue.Queue[tuple[str, object]]" = queue.Queue()
+
+def _worker_loop():
+    while True:
+        cmd, callback = _work_queue.get()
+        try:
+            result = run_shell_capture_cached(cmd)
+            GLib.idle_add(callback, result)
+        except Exception:
+            pass
+        finally:
+            _work_queue.task_done()
+
+for _i in range(_WORKER_COUNT):
+    threading.Thread(target=_worker_loop, daemon=True).start()
 
 class RefreshTask:
     def __init__(self, widget_update_fn, cmd: str, interval_sec: float):
@@ -35,10 +57,7 @@ class RefreshTask:
         self._timer_id = GLib.timeout_add(delay, self._tick)
 
     def _tick(self):
-        def work():
-            result = run_shell_capture(self.cmd)
-            GLib.idle_add(self.widget_update_fn, result)
-        threading.Thread(target=work, daemon=True).start()
+        _work_queue.put((self.cmd, self.widget_update_fn))
         if self._active:
             self._schedule_tick(immediate=False)
         return False

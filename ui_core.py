@@ -38,7 +38,7 @@ except Exception:
     EVDEV_AVAILABLE = False
 
 from refresh import RefreshTask, DEFAULT_REFRESH_SEC, Debouncer
-from shell import run_shell_capture, normalize_bool_str, get_primary_geometry, expand_command_string
+from shell import run_shell_capture, run_shell_capture_cached, normalize_bool_str, get_primary_geometry, expand_command_string
 
 # handle_afterclick_before : actions to do before the call
 # handle_afterclick_after  : actions to do after the call
@@ -109,7 +109,7 @@ def evaluate_if_condition(condition: str, rendered_ids: set[str]) -> bool:
         cmd = s[2:-1].strip()
         if not cmd:
             return False
-        result = run_shell_capture(cmd)
+        result = run_shell_capture_cached(cmd)
         # Treat "null" as empty result (common in shell commands)
         result_clean = result.strip()
         if result_clean.lower() == "null":
@@ -1846,7 +1846,7 @@ class UICore:
 
             # Initial evaluation
             def set_initial():
-                initial_val = run_shell_capture(c).strip()
+                initial_val = run_shell_capture_cached(c).strip()
                 element_id = (sub.attrs.get("id", "") or "").strip()
                 
                 if is_empty_or_null(initial_val):
@@ -1981,7 +1981,7 @@ class UICore:
         if status_cmd:
             # Defer initial value to idle for faster startup
             def set_initial():
-                initial_val = run_shell_capture(status_cmd)
+                initial_val = run_shell_capture_cached(status_cmd)
                 initial_active = normalize_bool_str(initial_val)
                 tbtn.set_active(initial_active)
                 return False
@@ -2172,7 +2172,7 @@ class UICore:
             c = cmd_of(value_cmd)
             
             # Get initial state
-            initial_val = run_shell_capture(c).strip()
+            initial_val = run_shell_capture_cached(c).strip()
             if initial_val:
                 update_switch_state(initial_val)
             # Don't hide switch if no initial value - keep it visible
@@ -2437,7 +2437,7 @@ class UICore:
             c = cmd_of(content)
 
             # Initial evaluation before creating any widget
-            initial_path = run_shell_capture(c).strip()
+            initial_path = run_shell_capture_cached(c).strip()
             if not initial_path or initial_path.lower() == "null":
                 # Keep absent → no flash, no navigation
                 state["path"] = None
@@ -2847,7 +2847,7 @@ class UICore:
             c = cmd_of(disp)
 
             # Get initial value to check if we should render at all
-            initial_val = run_shell_capture(c).strip()
+            initial_val = run_shell_capture_cached(c).strip()
             element_id = (sub.attrs.get("id", "") or "").strip()
             
             if not initial_val or initial_val.lower() == "null":
@@ -3029,7 +3029,7 @@ class UICore:
             c = cmd_of(disp)
             
             # Get initial value to check if we should render at all
-            initial_val = run_shell_capture(c).strip()
+            initial_val = run_shell_capture_cached(c).strip()
             element_id = (sub.attrs.get("id", "") or "").strip()
             
             if not initial_val or initial_val.lower() == "null":

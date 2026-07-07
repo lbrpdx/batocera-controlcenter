@@ -10,6 +10,8 @@
 import os
 import shlex
 import subprocess
+import threading
+import time
 
 import gi
 gi.require_version('Gdk', '3.0')
@@ -61,7 +63,7 @@ def expand_command_string(s: str) -> str:
             if depth == 0:
                 # Extract and run command
                 cmd = result[cmd_start:i-1]
-                cmd_result = run_shell_capture(cmd.strip())
+                cmd_result = run_shell_capture_cached(cmd.strip())
                 # Replace ${cmd} with result
                 result = result[:start] + cmd_result + result[i:]
                 i = start + len(cmd_result)
@@ -110,6 +112,31 @@ def run_shell_capture(cmd: str, timeout_sec: float = 3.0) -> str:
         return ""
     except Exception:
         return ""
+
+_shell_cache_lock = threading.Lock()
+_shell_cache: dict[str, tuple[float, str]] = {}
+
+def run_shell_capture_cached(cmd: str, ttl_sec: float = 1.0, timeout_sec: float = 3.0) -> str:
+    """
+    Same as run_shell_capture, but reuses a recent result for an identical
+    command within ttl_sec instead of spawning a new process.
+
+    Intended only for read-only display/condition commands, where several
+    widgets may poll the exact same command on overlapping intervals (e.g.
+    multiple elements querying the same local API). Do NOT use this for
+    commands with side effects (button actions, afterclick, etc.) — those
+    must always execute fresh.
+    """
+    if not cmd:
+        return ""
+    with _shell_cache_lock:
+        cached = _shell_cache.get(cmd)
+        if cached and (time.monotonic() - cached[0]) < ttl_sec:
+            return cached[1]
+    result = run_shell_capture(cmd, timeout_sec=timeout_sec)
+    with _shell_cache_lock:
+        _shell_cache[cmd] = (time.monotonic(), result)
+    return result
 
 def ensure_display() -> bool:
     return bool(os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"))
