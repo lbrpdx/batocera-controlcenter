@@ -118,7 +118,6 @@ def get_primary_geometry():
     """
     Returns (x, y, width, height) for the primary monitor.
     Falls back to monitor 0, and to 1280x720 if unavailable.
-    Ensures landscape orientation width >= height.
     """
     display = Gdk.Display.get_default()
     mon = None
@@ -133,9 +132,6 @@ def get_primary_geometry():
             mon = None
     if mon and hasattr(mon, "get_geometry"):
         g = mon.get_geometry()
-        # Some handhelds report portrait; normalize to landscape for popup sizing
-        if g.height > g.width:
-            (g.width, g.height) = (g.height, g.width)
         return g.x, g.y, g.width, g.height
     return (0, 0, 1280, 720)
 
