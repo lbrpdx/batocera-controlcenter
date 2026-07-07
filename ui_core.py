@@ -382,11 +382,7 @@ class UICore:
                     sw, sh = width, height
                 else:
                     width, height = geometry.width, geometry.height
-                    # Assumption: landcape before on_map()
-                    if width >= height:
-                        sw, sh = width, height
-                    else:
-                        sh, sw = width, height
+                    sw, sh = width, height
 
                     scale_class = "small"
                     if sw >= 1280:
