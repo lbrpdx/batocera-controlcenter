@@ -14,19 +14,24 @@ from shell import run_shell_capture_cached
 
 DEFAULT_REFRESH_SEC = 0  # no refresh by default (set refresh="1.0" on elements that need updates ever 1sec)
 
-# Shared pool of persistent daemon workers for RefreshTask ticks, so that
-# refreshing ~20 widgets doesn't mean spawning ~20 new OS threads every
-# tick. Workers block on the queue (no polling) so an idle pool costs
-# essentially nothing.
+# Shared pool of persistent daemon workers for RefreshTask ticks and one-shot
+# off-main-thread actions. Workers block on the queue (idle pool costs nothing).
+# Queue items: ("__call__", fn) runs fn(); (cmd, callback) runs
+# run_shell_capture_cached(cmd) then idle_add(callback, result).
 _WORKER_COUNT = 4
-_work_queue: "queue.Queue[tuple[str, object]]" = queue.Queue()
+_work_queue: "queue.Queue[tuple]" = queue.Queue()
 
 def _worker_loop():
     while True:
-        cmd, callback = _work_queue.get()
+        item = _work_queue.get()
         try:
-            result = run_shell_capture_cached(cmd)
-            GLib.idle_add(callback, result)
+            if len(item) == 2 and item[0] == "__call__":
+                _, fn = item
+                fn()
+            else:
+                cmd, callback = item
+                result = run_shell_capture_cached(cmd)
+                GLib.idle_add(callback, result)
         except Exception:
             pass
         finally:
@@ -34,6 +39,15 @@ def _worker_loop():
 
 for _i in range(_WORKER_COUNT):
     threading.Thread(target=_worker_loop, daemon=True).start()
+
+
+def run_off_main_thread(fn):
+    """
+    Run *fn* on a shared background worker (replaces ad-hoc
+    threading.Thread per action). *fn* must marshal UI work back via
+    GLib.idle_add. Fire-and-forget.
+    """
+    _work_queue.put(("__call__", fn))
 
 class RefreshTask:
     def __init__(self, widget_update_fn, cmd: str, interval_sec: float):
