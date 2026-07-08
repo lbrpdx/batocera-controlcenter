@@ -115,6 +115,8 @@ def run_shell_capture(cmd: str, timeout_sec: float = 3.0) -> str:
 
 _shell_cache_lock = threading.Lock()
 _shell_cache: dict[str, tuple[float, str]] = {}
+# Commands with a background refresh in flight (dedupes concurrent refreshes).
+_refresh_in_flight: set[str] = set()
 
 def run_shell_capture_cached(cmd: str, ttl_sec: float = 1.0, timeout_sec: float = 3.0) -> str:
     """
@@ -137,6 +139,53 @@ def run_shell_capture_cached(cmd: str, ttl_sec: float = 1.0, timeout_sec: float 
     with _shell_cache_lock:
         _shell_cache[cmd] = (time.monotonic(), result)
     return result
+
+
+def run_shell_cache_lookup(cmd: str, ttl_sec: float = 5.0) -> str:
+    """
+    Return a cached result for *cmd* without ever spawning a subprocess on
+    the calling thread — main-loop-safe (no fork, no I/O). If the value is
+    stale or missing, a background refresh is scheduled and the stale value
+    (or "") is returned. The RefreshTask workers keep the cache warm, so in
+    steady state this is a pure dict lookup.
+    """
+    if not cmd:
+        return ""
+    now = time.monotonic()
+    with _shell_cache_lock:
+        cached = _shell_cache.get(cmd)
+        if cached:
+            ts, val = cached
+            if (now - ts) < ttl_sec:
+                return val
+            stale_val = val
+            already_refreshing = cmd in _refresh_in_flight
+            if not already_refreshing:
+                _refresh_in_flight.add(cmd)
+            else:
+                return stale_val  # refresh already running; keep stale value
+        else:
+            stale_val = ""
+            already_refreshing = cmd in _refresh_in_flight
+            if not already_refreshing:
+                _refresh_in_flight.add(cmd)
+            else:
+                return ""
+
+    # Schedule a background refresh (off the calling/UI thread)
+    def _bg_refresh():
+        try:
+            result = run_shell_capture(cmd)
+            with _shell_cache_lock:
+                _shell_cache[cmd] = (time.monotonic(), result)
+        except Exception:
+            pass
+        finally:
+            with _shell_cache_lock:
+                _refresh_in_flight.discard(cmd)
+
+    threading.Thread(target=_bg_refresh, daemon=True).start()
+    return stale_val
 
 def ensure_display() -> bool:
     return bool(os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"))

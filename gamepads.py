@@ -63,6 +63,8 @@ class GamePads:
 
     def close_devices(self):
         """Release exclusive access to gamepad devices"""
+        if not self._gamepad_devices:
+            return
         for dev in self._gamepad_devices:
             try:
                 dev.ungrab()
@@ -73,8 +75,11 @@ class GamePads:
         self._gamepad_devices = []
 
     def stop_listen(self):
+        # Signal the loop to stop, then close fds so a blocking select()
+        # wakes immediately (fd close raises OSError/ValueError out of select).
         self._gamepad_running = False
         self._stop_all_continuous_actions()
+        self.close_devices()
 
     def _start_continuous_action(self, action, callback):
         """Start continuous action for the given action type"""
@@ -375,14 +380,15 @@ class GamePads:
         self._gamepad_running = True
 
         while self._gamepad_running:
-            # Use select to wait for events from any device
-            # Check if devices list is empty (shutdown in progress)
+            # 1s timeout (was 0.1s polling) cuts idle wakeups 10/s -> 1/s.
+            # Shutdown is immediate: stop_listen() closes the fds, raising
+            # OSError/ValueError out of select.
             if len(self._gamepad_devices) == 0:
                 break
             try:
-                r, w, x = select.select(self._gamepad_devices, [], [], 0.1)
+                r, w, x = select.select(self._gamepad_devices, [], [], 1.0)
             except (OSError, ValueError):
-                # File descriptor closed during select
+                # File descriptor closed during select (shutdown)
                 break
 
             for device in r:

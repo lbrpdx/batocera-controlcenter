@@ -8,7 +8,6 @@
 #
 # YOU MUST KEEP THIS HEADER AS IT IS
 import os
-import threading
 import time
 import gi
 gi.require_version('Gtk', '3.0'); gi.require_version('Gdk', '3.0')
@@ -37,8 +36,8 @@ try:
 except Exception:
     EVDEV_AVAILABLE = False
 
-from refresh import RefreshTask, DEFAULT_REFRESH_SEC, Debouncer
-from shell import run_shell_capture, run_shell_capture_cached, normalize_bool_str, get_primary_geometry, expand_command_string
+from refresh import RefreshTask, DEFAULT_REFRESH_SEC, Debouncer, run_off_main_thread
+from shell import run_shell_capture, run_shell_capture_cached, run_shell_cache_lookup, normalize_bool_str, get_primary_geometry, expand_command_string
 
 # handle_afterclick_before : actions to do before the call
 # handle_afterclick_after  : actions to do after the call
@@ -68,14 +67,14 @@ def handle_afterclick_after(core: 'UICore', afterclick_attr: str):
     
     if afterclick == "bcc_refresh":
         # Force the UI to re-read all shell commands and toggle visibility
-        GLib.idle_add(core._recompute_conditionals)
+        GLib.idle_add(core.schedule_recompute_conditionals)
     elif afterclick.startswith("${") and afterclick.endswith("}"):
         # Command substitution - execute the command
         cmd = afterclick[2:-1]  # Remove ${ and }
-        threading.Thread(target=lambda: run_shell_capture(cmd), daemon=True).start()
+        run_off_main_thread(lambda: run_shell_capture(cmd))
     else:
         # Direct command
-        threading.Thread(target=lambda: run_shell_capture(afterclick), daemon=True).start()
+        run_off_main_thread(lambda: run_shell_capture(afterclick))
 
 def evaluate_if_condition(condition: str, rendered_ids: set[str]) -> bool:
     """
@@ -109,7 +108,8 @@ def evaluate_if_condition(condition: str, rendered_ids: set[str]) -> bool:
         cmd = s[2:-1].strip()
         if not cmd:
             return False
-        result = run_shell_capture_cached(cmd)
+        # Non-forking cache lookup: never blocks the UI thread on a subprocess.
+        result = run_shell_cache_lookup(cmd)
         # Treat "null" as empty result (common in shell commands)
         result_clean = result.strip()
         if result_clean.lower() == "null":
@@ -616,8 +616,7 @@ class UICore:
                     return False
 
                 # Run sway commands in a background thread
-                import threading
-                threading.Thread(target=sway_commands, daemon=True).start()
+                run_off_main_thread(sway_commands)
 
             try:
                 win.grab_focus()
@@ -1625,16 +1624,28 @@ class UICore:
                     # Run the main action first
                     run_shell_capture(act)
                     # Force a UI refresh after EVERY action
-                    GLib.idle_add(self._recompute_conditionals)
+                    GLib.idle_add(self.schedule_recompute_conditionals)
                     if afterclick:
                         GLib.idle_add(lambda: handle_afterclick_after(self, afterclick))
                 if afterclick:
                     GLib.idle_add(lambda: handle_afterclick_before(self, afterclick))
-                threading.Thread(target=run_action_with_afterclick, daemon=True).start()
+                run_off_main_thread(run_action_with_afterclick)
         return cb
+
+    def schedule_recompute_conditionals(self):
+        """
+        Coalesce recompute requests: at most one pass is ever pending on the
+        idle queue. The pass clears the flag on entry, so work arriving
+        mid-pass gets a follow-up pass.
+        """
+        if getattr(self, "_recompute_pending", False):
+            return
+        self._recompute_pending = True
+        GLib.idle_add(self._recompute_conditionals)
 
     def _recompute_conditionals(self):
         """Recompute visibility for all widgets with 'if' conditions."""
+        self._recompute_pending = False
         if hasattr(self, '_conditional_widgets'):
             tab_visibility_changed = False
             
@@ -2034,7 +2045,7 @@ class UICore:
                         handle_afterclick_after(self, afterclick)
                 if afterclick:
                     handle_afterclick_before(self, afterclick)
-                threading.Thread(target=run_toggle_action, daemon=True).start()
+                run_off_main_thread(run_toggle_action)
 
         tbtn.connect("toggled", on_toggled)
         
@@ -2151,10 +2162,10 @@ class UICore:
                 
                 if state and action_on:
                     if self.debouncer.allow(f"switch_on:{action_on}"):
-                        threading.Thread(target=lambda: run_switch_action(action_on), daemon=True).start()
+                        run_off_main_thread(lambda: run_switch_action(action_on))
                 elif not state and action_off:
                     if self.debouncer.allow(f"switch_off:{action_off}"):
-                        threading.Thread(target=lambda: run_switch_action(action_off), daemon=True).start()
+                        run_off_main_thread(lambda: run_switch_action(action_off))
                 
                 return False  # Return False to allow the state change
             except Exception as e:
@@ -2635,8 +2646,8 @@ class UICore:
                 
                 GLib.idle_add(set_image)
             
-            # Load in background thread to avoid blocking
-            threading.Thread(target=do_load, daemon=True).start()
+            # Load via the shared worker pool (bounded concurrency, no per-image thread).
+            run_off_main_thread(do_load)
 
         # Check if display is a command or static path
         if is_cmd(disp):
@@ -2839,7 +2850,7 @@ class UICore:
                         img.set_visible(False)
                         return False
                     GLib.idle_add(hide)
-            threading.Thread(target=do_generate, daemon=True).start()
+            run_off_main_thread(do_generate)
 
         # Check if display is a command or static text
         if is_cmd(disp):
@@ -2870,7 +2881,7 @@ class UICore:
                     # Only recompute if this element has an ID (affects conditionals)
                     if element_id:
                         register_element_id(_sub, _core.rendered_ids)
-                        GLib.idle_add(lambda: (_img.set_visible(True), _core._recompute_conditionals(), False)[2])
+                        GLib.idle_add(lambda: (_img.set_visible(True), _core.schedule_recompute_conditionals(), False)[2])
                     else:
                         GLib.idle_add(lambda: (_img.set_visible(True), False)[1])
                 else:
@@ -3051,7 +3062,7 @@ class UICore:
                     # Only recompute if this element has an ID (affects conditionals)
                     if element_id:
                         register_element_id(_sub, _core.rendered_ids)
-                        GLib.idle_add(lambda: (_container.set_visible(True), _core._recompute_conditionals(), False)[2])
+                        GLib.idle_add(lambda: (_container.set_visible(True), _core.schedule_recompute_conditionals(), False)[2])
                     else:
                         GLib.idle_add(lambda: (_container.set_visible(True), False)[1])
                 else:
@@ -4292,9 +4303,11 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
                         self._timer_id = GLib.timeout_add(delay, self._tick)
 
                     def _tick(self):
-                        def work():
+                        # schedule update on main loop directly (no per-tick thread)
+                        try:
                             GLib.idle_add(self.update_fn)
-                        threading.Thread(target=work, daemon=True).start()
+                        except Exception:
+                            pass
                         if self._active:
                             self._schedule_tick(immediate=False)
                         return False
@@ -4735,7 +4748,7 @@ def _show_confirm_dialog(core: UICore, message: str, action: str, afterclick: st
                     handle_afterclick_after(core, afterclick)
             if afterclick:
                 handle_afterclick_before(core, afterclick)
-            threading.Thread(target=run_confirm_action, daemon=True).start()
+            run_off_main_thread(run_confirm_action)
 
     # Override gamepad handler for dialog
     original_handler = core._handle_gamepad_action_main
@@ -4910,7 +4923,7 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
                     handle_afterclick_after(core, afterclick_attr)
             if afterclick_attr:
                 handle_afterclick_before(core, afterclick_attr)
-            threading.Thread(target=run_choice_action, daemon=True).start()
+            run_off_main_thread(run_choice_action)
 
     def update_choice_focus():
         # Clear focus from all choice buttons
@@ -5013,8 +5026,7 @@ def _open_choice_popup(core: UICore, feature_label: str, choices):
                              capture_output=True, timeout=1)
             except Exception:
                 pass
-        import threading
-        threading.Thread(target=remove_dialog_decorations, daemon=True).start()
+        run_off_main_thread(remove_dialog_decorations)
 
     # Connect destroy handler to clean up
     def on_dialog_destroy(*_):
