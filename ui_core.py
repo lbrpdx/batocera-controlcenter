@@ -76,7 +76,7 @@ def handle_afterclick_after(core: 'UICore', afterclick_attr: str):
         # Direct command
         run_off_main_thread(lambda: run_shell_capture(afterclick))
 
-def evaluate_if_condition(condition: str, rendered_ids: set[str]) -> bool:
+def evaluate_if_condition(condition: str, rendered_ids: set[str], force_fresh: bool = False) -> bool:
     """
     Evaluate an 'if' condition to determine if an element should be rendered.
 
@@ -84,6 +84,13 @@ def evaluate_if_condition(condition: str, rendered_ids: set[str]) -> bool:
     - if="id(some_id)" - True if element with id="some_id" is rendered
     - if="!id(some_id)" - True if element with id="some_id" is NOT rendered
     - if="${command}" - True if command returns non-empty string
+
+    force_fresh forces a synchronous re-run of ${command} instead of trusting
+    the cache. Used once when the window is about to become visible: the
+    cache can be arbitrarily stale by then (nothing refreshes it while
+    hidden - the heartbeat that keeps it warm is stopped in hide()), so the
+    non-blocking cache lookup could show a popup with visibly wrong state
+    for a moment before self-healing on the next heartbeat tick.
 
     Returns True if condition is met, False otherwise.
     """
@@ -108,8 +115,14 @@ def evaluate_if_condition(condition: str, rendered_ids: set[str]) -> bool:
         cmd = s[2:-1].strip()
         if not cmd:
             return False
-        # Non-forking cache lookup: never blocks the UI thread on a subprocess.
-        result = run_shell_cache_lookup(cmd)
+        if force_fresh:
+            # Bypass the cache entirely (ttl_sec=0 always treats it as
+            # stale) and block briefly for a correct answer; also warms the
+            # cache for the next non-blocking lookup.
+            result = run_shell_capture_cached(cmd, ttl_sec=0)
+        else:
+            # Non-forking cache lookup: never blocks the UI thread on a subprocess.
+            result = run_shell_cache_lookup(cmd)
         # Treat "null" as empty result (common in shell commands)
         result_clean = result.strip()
         if result_clean.lower() == "null":
@@ -1445,9 +1458,13 @@ class UICore:
 
     def show(self, *_a):
         self.start_gamepad()
-        self._recompute_conditionals()
         self.window.present()
         self.reset_inactivity_timer()  # Reset timer on button click
+        # start_refresh() does a force-fresh conditional recompute, so
+        # widget visibility (incl. this record icon) is correct for the
+        # window's first paint - nothing repaints between present() and
+        # here in this single-threaded call, so there's no point doing a
+        # separate (non-forced, possibly stale) pass before present().
         self.start_refresh()
         self.set_tab_focus()
         # Reset focus to first row to prevent discrepancy after timeout
@@ -1505,16 +1522,11 @@ class UICore:
         # Start refreshers after a short delay to let window settle
         GLib.timeout_add(100, start_refreshers_idle)
 
-        for widget, condition in self._conditional_widgets:
-            debug_print(f"[REFRESHER] widget: {widget}")
-            try:
-                should_show = evaluate_if_condition(condition, self.rendered_ids)
-                self._apply_conditional_visibility(widget, should_show)
-                debug_print(f"[REFRESHER] {condition} -> {should_show}, IDs={self.rendered_ids}")
-            except Exception as e:
-                debug_print(f"[REFRESHER] Exception on {condition} : {e}")
-                pass
-
+        # Force-fresh: the window is about to become visible and its
+        # conditional widgets' cached state can be arbitrarily stale (the
+        # heartbeat that keeps it warm was stopped in hide()). Get it right
+        # for the first paint instead of waiting for the next heartbeat tick.
+        self._recompute_conditionals(force_fresh=True)
         self._start_conditional_heartbeat()
 
     def quit(self, *_a):
@@ -1707,15 +1719,15 @@ class UICore:
         self._recompute_pending = True
         GLib.idle_add(self._recompute_conditionals)
 
-    def _recompute_conditionals(self):
+    def _recompute_conditionals(self, force_fresh: bool = False):
         """Recompute visibility for all widgets with 'if' conditions."""
         self._recompute_pending = False
         if hasattr(self, '_conditional_widgets'):
             tab_visibility_changed = False
-            
+
             for widget, condition in self._conditional_widgets:
                 try:
-                    should_show = evaluate_if_condition(condition, self.rendered_ids)
+                    should_show = evaluate_if_condition(condition, self.rendered_ids, force_fresh=force_fresh)
                     old_visible = self._apply_conditional_visibility(widget, should_show)
 
                     # If this is a tab and visibility changed, mark for focus system update
