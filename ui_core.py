@@ -725,6 +725,29 @@ class UICore:
                 target_height = getattr(img_widget, '_target_height', None)
                 self._start_animation_playback(img_widget, img_widget._animation, target_width, target_height)
 
+    def _apply_conditional_visibility(self, widget, should_show: bool):
+        """Set a conditional widget's visibility, restarting GIF playback if
+        a hidden animated <img> is becoming visible. A widget that starts
+        hidden (if="...") is never realized in GTK3, so its animation loop
+        never got to run its first frame; nothing else restarts it once the
+        condition flips the widget visible, so this is the one place that
+        does.
+
+        Guarded by the absence of a live _animation_timeout_id: a widget
+        that was already realized once keeps ticking in the background even
+        while hidden again later (advance_frame only checks get_realized(),
+        not get_visible()), so restarting unconditionally here would spawn a
+        second, parallel timeout chain double-driving the same frames."""
+        old_visible = widget.get_visible()
+        widget.set_visible(should_show)
+        if (should_show and not old_visible and hasattr(widget, '_animation')
+                and not self._animations_paused
+                and not getattr(widget, '_animation_timeout_id', None)):
+            self._start_animation_playback(widget, widget._animation,
+                                            getattr(widget, '_target_width', None),
+                                            getattr(widget, '_target_height', None))
+        return old_visible
+
     def _start_animation_playback(self, img_widget, animation, target_width=None, target_height=None):
         """Start playing an animation with frame rate limiting and optional scaling"""
         if not animation or animation.is_static_image():
@@ -736,22 +759,24 @@ class UICore:
         # Determine if we need to scale frames
         need_scaling = target_width or target_height
 
-        # Cache scaled frames across loops of the same animation: GdkPixbuf's
-        # GIF loader hands back the same frame pixbuf object on every pass
-        # through the loop, so id(pixbuf) is a stable key for that frame.
-        # Without this, every frame gets re-scaled on every single loop,
-        # forever, which is pure wasted CPU on repeat playback.
-        if not hasattr(img_widget, '_scaled_frame_cache'):
-            img_widget._scaled_frame_cache = {}
-        scaled_frame_cache = img_widget._scaled_frame_cache
-
         def advance_frame():
             if self._animations_paused:
                 return False  # Stop the timeout
             
-            if not img_widget or not img_widget.get_realized():
-                return False  # Widget destroyed or not visible
-            
+            if not img_widget:
+                return False  # Widget destroyed
+
+            if not img_widget.get_realized():
+                # Not yet realized - e.g. still hidden behind an `if`, or
+                # this first tick landed before the window's very first
+                # present() (show() flips visibility before presenting, so
+                # _apply_conditional_visibility's restart can race the
+                # widget actually becoming realizable). Keep polling at a
+                # light cadence instead of dying outright: this is the
+                # fallback for that race, not the primary restart path.
+                img_widget._animation_timeout_id = GLib.timeout_add(200, advance_frame)
+                return False
+
             # Get the animation iterator
             if not hasattr(img_widget, '_animation_iter'):
                 img_widget._animation_iter = animation.get_iter()
@@ -762,33 +787,29 @@ class UICore:
             iter.advance()
             pixbuf = iter.get_pixbuf()
             
-            # Scale frame if dimensions are specified (cached per raw frame
-            # after the first pass through the loop)
+            # Scale frame if dimensions are specified. Note: gdk-pixbuf's
+            # animation iterator hands back the SAME pixbuf object every
+            # call (id(pixbuf) never changes) with its pixel buffer mutated
+            # in place each frame - so scaling can't be cached by identity;
+            # it must be redone fresh every single frame.
             if need_scaling:
-                cached = scaled_frame_cache.get(id(pixbuf))
-                if cached is not None:
-                    pixbuf = cached
-                else:
-                    from gi.repository import GdkPixbuf
-                    orig_width = pixbuf.get_width()
-                    orig_height = pixbuf.get_height()
-                    raw_pixbuf = pixbuf
+                from gi.repository import GdkPixbuf
+                orig_width = pixbuf.get_width()
+                orig_height = pixbuf.get_height()
 
-                    if target_width and target_height:
-                        # Both specified
-                        pixbuf = pixbuf.scale_simple(target_width, target_height, GdkPixbuf.InterpType.BILINEAR)
-                    elif target_width:
-                        # Only width specified, maintain aspect ratio
-                        aspect = orig_height / orig_width
-                        new_height = int(target_width * aspect)
-                        pixbuf = pixbuf.scale_simple(target_width, new_height, GdkPixbuf.InterpType.BILINEAR)
-                    elif target_height:
-                        # Only height specified, maintain aspect ratio
-                        aspect = orig_width / orig_height
-                        new_width = int(target_height * aspect)
-                        pixbuf = pixbuf.scale_simple(new_width, target_height, GdkPixbuf.InterpType.BILINEAR)
-
-                    scaled_frame_cache[id(raw_pixbuf)] = pixbuf
+                if target_width and target_height:
+                    # Both specified
+                    pixbuf = pixbuf.scale_simple(target_width, target_height, GdkPixbuf.InterpType.BILINEAR)
+                elif target_width:
+                    # Only width specified, maintain aspect ratio
+                    aspect = orig_height / orig_width
+                    new_height = int(target_width * aspect)
+                    pixbuf = pixbuf.scale_simple(target_width, new_height, GdkPixbuf.InterpType.BILINEAR)
+                elif target_height:
+                    # Only height specified, maintain aspect ratio
+                    aspect = orig_width / orig_height
+                    new_width = int(target_height * aspect)
+                    pixbuf = pixbuf.scale_simple(new_width, target_height, GdkPixbuf.InterpType.BILINEAR)
 
             img_widget.set_from_pixbuf(pixbuf)
             
@@ -1417,6 +1438,7 @@ class UICore:
 
     def hide(self, *_a):
         self.pause_animations()  # Pause GIF animations to save CPU
+        self._stop_conditional_heartbeat()
         self.window.hide()
         self._gamepads.stopThread()
         self.stop_refresh()
@@ -1487,11 +1509,13 @@ class UICore:
             debug_print(f"[REFRESHER] widget: {widget}")
             try:
                 should_show = evaluate_if_condition(condition, self.rendered_ids)
-                widget.set_visible(should_show)
+                self._apply_conditional_visibility(widget, should_show)
                 debug_print(f"[REFRESHER] {condition} -> {should_show}, IDs={self.rendered_ids}")
             except Exception as e:
                 debug_print(f"[REFRESHER] Exception on {condition} : {e}")
                 pass
+
+        self._start_conditional_heartbeat()
 
     def quit(self, *_a):
         # If there are open dialogs, destroy them first
@@ -1649,6 +1673,29 @@ class UICore:
                 run_off_main_thread(run_action_with_afterclick)
         return cb
 
+    def _start_conditional_heartbeat(self):
+        """Periodically re-check `if="${cmd}"` conditions while the window is
+        visible. Without this, a condition driven by state that changes
+        outside the control center (e.g. recording toggled via a gamepad
+        hotkey) never gets re-evaluated: nothing else re-triggers a
+        recompute except user actions taken inside this window."""
+        if getattr(self, "_conditional_heartbeat_id", None):
+            return
+        self._conditional_heartbeat_id = GLib.timeout_add(2000, self._conditional_heartbeat_tick)
+
+    def _stop_conditional_heartbeat(self):
+        tid = getattr(self, "_conditional_heartbeat_id", None)
+        if tid:
+            try:
+                GLib.source_remove(tid)
+            except Exception:
+                pass
+            self._conditional_heartbeat_id = None
+
+    def _conditional_heartbeat_tick(self):
+        self.schedule_recompute_conditionals()
+        return True  # keep repeating
+
     def schedule_recompute_conditionals(self):
         """
         Coalesce recompute requests: at most one pass is ever pending on the
@@ -1668,14 +1715,13 @@ class UICore:
             
             for widget, condition in self._conditional_widgets:
                 try:
-                    old_visible = widget.get_visible()
                     should_show = evaluate_if_condition(condition, self.rendered_ids)
-                    widget.set_visible(should_show)
-                    
+                    old_visible = self._apply_conditional_visibility(widget, should_show)
+
                     # If this is a tab and visibility changed, mark for focus system update
                     if hasattr(widget, '_tab_target') and old_visible != should_show:
                         tab_visibility_changed = True
-                        
+
                     debug_print(f"[RECOMPUTE] {condition} -> {should_show}, IDs={self.rendered_ids}")
                 except Exception:
                     pass
@@ -2615,9 +2661,6 @@ class UICore:
                         img._animation = animation
                         img._target_width = target_width
                         img._target_height = target_height
-                        # New animation means the old scaled-frame cache (if any)
-                        # refers to a different GIF's frames; drop it.
-                        img._scaled_frame_cache = {}
 
                         # Add to active animations list
                         self._active_animations.append(img)
