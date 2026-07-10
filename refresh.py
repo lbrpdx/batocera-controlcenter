@@ -76,6 +76,38 @@ class RefreshTask:
             self._schedule_tick(immediate=False)
         return False
 
+class ExpandRefreshTask:
+    """Like RefreshTask, but re-runs an already-bound update_fn() directly
+    on the main loop each tick instead of dispatching a shell command
+    through the worker pool (used for ${...} string expansion)."""
+    def __init__(self, update_fn, interval_sec: float):
+        self.update_fn = update_fn
+        self.interval_ms = max(250, int(interval_sec * 1000))
+        self._timer_id = None
+        self._active = False
+
+    def start(self):
+        if self._active:
+            return
+        self._active = True
+        self._schedule_tick(immediate=True)
+
+    def stop(self):
+        self._active = False
+
+    def _schedule_tick(self, immediate=False):
+        delay = 1 if immediate else self.interval_ms
+        self._timer_id = GLib.timeout_add(delay, self._tick)
+
+    def _tick(self):
+        try:
+            GLib.idle_add(self.update_fn)
+        except Exception:
+            pass
+        if self._active:
+            self._schedule_tick(immediate=False)
+        return False
+
 class Debouncer:
     def __init__(self, min_interval_ms: int):
         self.min_ms = max(1, int(min_interval_ms))

@@ -36,7 +36,7 @@ try:
 except Exception:
     EVDEV_AVAILABLE = False
 
-from refresh import RefreshTask, DEFAULT_REFRESH_SEC, Debouncer, run_off_main_thread
+from refresh import RefreshTask, ExpandRefreshTask, DEFAULT_REFRESH_SEC, Debouncer, run_off_main_thread
 from shell import run_shell_capture, run_shell_capture_cached, run_shell_cache_lookup, normalize_bool_str, get_primary_geometry, expand_command_string
 
 # handle_afterclick_before : actions to do before the call
@@ -735,7 +735,16 @@ class UICore:
         
         # Determine if we need to scale frames
         need_scaling = target_width or target_height
-        
+
+        # Cache scaled frames across loops of the same animation: GdkPixbuf's
+        # GIF loader hands back the same frame pixbuf object on every pass
+        # through the loop, so id(pixbuf) is a stable key for that frame.
+        # Without this, every frame gets re-scaled on every single loop,
+        # forever, which is pure wasted CPU on repeat playback.
+        if not hasattr(img_widget, '_scaled_frame_cache'):
+            img_widget._scaled_frame_cache = {}
+        scaled_frame_cache = img_widget._scaled_frame_cache
+
         def advance_frame():
             if self._animations_paused:
                 return False  # Stop the timeout
@@ -753,26 +762,34 @@ class UICore:
             iter.advance()
             pixbuf = iter.get_pixbuf()
             
-            # Scale frame if dimensions are specified
+            # Scale frame if dimensions are specified (cached per raw frame
+            # after the first pass through the loop)
             if need_scaling:
-                from gi.repository import GdkPixbuf
-                orig_width = pixbuf.get_width()
-                orig_height = pixbuf.get_height()
-                
-                if target_width and target_height:
-                    # Both specified
-                    pixbuf = pixbuf.scale_simple(target_width, target_height, GdkPixbuf.InterpType.BILINEAR)
-                elif target_width:
-                    # Only width specified, maintain aspect ratio
-                    aspect = orig_height / orig_width
-                    new_height = int(target_width * aspect)
-                    pixbuf = pixbuf.scale_simple(target_width, new_height, GdkPixbuf.InterpType.BILINEAR)
-                elif target_height:
-                    # Only height specified, maintain aspect ratio
-                    aspect = orig_width / orig_height
-                    new_width = int(target_height * aspect)
-                    pixbuf = pixbuf.scale_simple(new_width, target_height, GdkPixbuf.InterpType.BILINEAR)
-            
+                cached = scaled_frame_cache.get(id(pixbuf))
+                if cached is not None:
+                    pixbuf = cached
+                else:
+                    from gi.repository import GdkPixbuf
+                    orig_width = pixbuf.get_width()
+                    orig_height = pixbuf.get_height()
+                    raw_pixbuf = pixbuf
+
+                    if target_width and target_height:
+                        # Both specified
+                        pixbuf = pixbuf.scale_simple(target_width, target_height, GdkPixbuf.InterpType.BILINEAR)
+                    elif target_width:
+                        # Only width specified, maintain aspect ratio
+                        aspect = orig_height / orig_width
+                        new_height = int(target_width * aspect)
+                        pixbuf = pixbuf.scale_simple(target_width, new_height, GdkPixbuf.InterpType.BILINEAR)
+                    elif target_height:
+                        # Only height specified, maintain aspect ratio
+                        aspect = orig_width / orig_height
+                        new_width = int(target_height * aspect)
+                        pixbuf = pixbuf.scale_simple(new_width, target_height, GdkPixbuf.InterpType.BILINEAR)
+
+                    scaled_frame_cache[id(raw_pixbuf)] = pixbuf
+
             img_widget.set_from_pixbuf(pixbuf)
             
             # Get delay for next frame (in milliseconds)
@@ -1801,36 +1818,6 @@ class UICore:
                         _core.rendered_ids.discard(element_id)
                         _core._recompute_conditionals()
 
-            class ExpandRefreshTask:
-                def __init__(self, update_fn, interval_sec):
-                    self.update_fn = update_fn
-                    self.interval_ms = max(250, int(interval_sec * 1000))
-                    self._timer_id = None
-                    self._active = False
-
-                def start(self):
-                    if self._active:
-                        return
-                    self._active = True
-                    self._schedule_tick(immediate=True)
-
-                def stop(self):
-                    self._active = False
-
-                def _schedule_tick(self, immediate=False):
-                    delay = 10 if immediate else self.interval_ms
-                    self._timer_id = GLib.timeout_add(delay, self._tick)
-
-                def _tick(self):
-                    # schedule update on main loop directly (no per-tick thread)
-                    try:
-                        GLib.idle_add(self.update_fn)
-                    except Exception:
-                        pass
-                    if self._active:
-                        self._schedule_tick(immediate=False)
-                    return False
-
             self.refreshers.append(ExpandRefreshTask(upd_expand, refresh))
 
             # Initial evaluation
@@ -2628,7 +2615,10 @@ class UICore:
                         img._animation = animation
                         img._target_width = target_width
                         img._target_height = target_height
-                        
+                        # New animation means the old scaled-frame cache (if any)
+                        # refers to a different GIF's frames; drop it.
+                        img._scaled_frame_cache = {}
+
                         # Add to active animations list
                         self._active_animations.append(img)
                         
@@ -4281,36 +4271,6 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
                 # Mixed content or multiple commands - use command substitution
                 def upd_expand(_l=lbl, _disp=disp):
                     _l.set_text(expand_command_string(_disp))
-
-                class ExpandRefreshTask:
-                    def __init__(self, update_fn, interval_sec):
-                        self.update_fn = update_fn
-                        self.interval_ms = max(250, int(interval_sec * 1000))
-                        self._timer_id = None
-                        self._active = False
-
-                    def start(self):
-                        if self._active:
-                            return
-                        self._active = True
-                        self._schedule_tick(immediate=True)
-
-                    def stop(self):
-                        self._active = False
-
-                    def _schedule_tick(self, immediate=False):
-                        delay = 1 if immediate else self.interval_ms
-                        self._timer_id = GLib.timeout_add(delay, self._tick)
-
-                    def _tick(self):
-                        # schedule update on main loop directly (no per-tick thread)
-                        try:
-                            GLib.idle_add(self.update_fn)
-                        except Exception:
-                            pass
-                        if self._active:
-                            self._schedule_tick(immediate=False)
-                        return False
 
                 core.refreshers.append(ExpandRefreshTask(upd_expand, refresh))
                 initial_val = expand_command_string(disp)

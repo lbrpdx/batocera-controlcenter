@@ -61,6 +61,84 @@ class GamePads:
             except Exception as e:
                 debug_print(f"[GAMEPAD] Could not grab {device.name}: {e}")
 
+    def _register_device(self, dev, pads_configs, mappings, axis_infos, axis_states):
+        """Compute and store the input mapping + axis calibration for one
+        device. Used both for devices found at startup and for ones
+        hot-plugged later."""
+        mapping = GamePads._find_best_controller_mapping(pads_configs, dev.name, dev.info.bustype, dev.info.vendor, dev.info.product, dev.info.version)
+        if mapping is None:
+            debug_print(f"[GAMEPAD] Warning: No mapping found for gamepad {dev.name}")
+            mapping = {}  # Empty mapping to prevent errors
+        mappings[dev.fd] = mapping
+
+        axis_states[dev.fd] = {}
+        axis_infos[dev.fd] = {}
+
+        # get axis relaxed values for this specific device
+        relaxValues = self.get_mapping_axis_relaxed_values(dev)
+
+        if "axis" in mapping:
+            for code in mapping["axis"]:
+                abs_info = dev.absinfo(code)
+                center = (abs_info.max + abs_info.min) // 2
+                if code in relaxValues and relaxValues[code]["centered"]:
+                    threshold = (abs_info.max - abs_info.min) // 4  # Original 25% deadzone
+                    bornemin = abs_info.min + threshold
+                    bornemax = abs_info.max - threshold
+                    debug_print(f"[GAMEPAD] Axis {code} centered deadzone: {bornemin} to {bornemax} (threshold: {threshold}, range: {abs_info.min}-{abs_info.max})")
+                else:
+                    bornemin = abs_info.min -1 # can't reach it
+                    bornemax = center
+                    debug_print(f"[GAMEPAD] Axis {code} non-centered deadzone: {bornemin} to {bornemax} (center: {center}, range: {abs_info.min}-{abs_info.max})")
+                axis_infos[dev.fd][code] = { "bornemin": bornemin, "bornemax": bornemax }
+
+                # Initialize axis state properly using the same logic as event handling
+                current_value = abs_info.value
+                initial_axis_value = 0
+                if current_value < bornemin:
+                    initial_axis_value = -1
+                elif current_value > bornemax:
+                    initial_axis_value = 1
+                axis_states[dev.fd][code] = initial_axis_value
+
+    def _remove_device(self, dev, mappings, axis_infos, axis_states):
+        """Drop a device that has been unplugged: release it and forget its
+        mapping/calibration state."""
+        if dev in self._gamepad_devices:
+            self._gamepad_devices.remove(dev)
+        mappings.pop(dev.fd, None)
+        axis_infos.pop(dev.fd, None)
+        axis_states.pop(dev.fd, None)
+        try:
+            dev.close()
+        except Exception:
+            pass
+        debug_print(f"[GAMEPAD] Removed gamepad {dev.name}")
+
+    def _handle_hotplug_add(self, device_node, pads_configs, mappings, axis_infos, axis_states):
+        # udev can fire multiple add/change events for the same device node
+        # during coldplug; ignore ones we're already tracking.
+        if any(d.path == device_node for d in self._gamepad_devices):
+            return
+        try:
+            dev = InputDevice(device_node)
+        except Exception as e:
+            debug_print(f"[GAMEPAD] Hotplug: could not open {device_node}: {e}")
+            return
+        try:
+            dev.grab()
+        except Exception as e:
+            debug_print(f"[GAMEPAD] Hotplug: could not grab {dev.name}: {e}")
+        self._gamepad_devices.append(dev)
+        self._register_device(dev, pads_configs, mappings, axis_infos, axis_states)
+        debug_print(f"[GAMEPAD] Hotplug: added gamepad {dev.name} at {device_node}")
+
+    def _handle_hotplug_remove(self, device_node, mappings, axis_infos, axis_states):
+        for dev in self._gamepad_devices:
+            if dev.path == device_node:
+                self._remove_device(dev, mappings, axis_infos, axis_states)
+                return
+
     def close_devices(self):
         """Release exclusive access to gamepad devices"""
         if not self._gamepad_devices:
@@ -147,8 +225,9 @@ class GamePads:
             try:
                 self.open_devices()
                 if self.nb_devices() == 0:
-                    debug_print("[GAMEPAD] No gamepad devices found via evdev")
-                    return
+                    debug_print("[GAMEPAD] No gamepad devices found via evdev at startup; watching for hot-plug")
+                # listen() also watches udev for hot-plug/unplug, so it's
+                # started even with zero devices at launch.
                 self.listen(handle_gamepad_action)
             except Exception as e:
                 debug_print(f"[GAMEPAD] Evdev gamepad error: {e}")
@@ -324,52 +403,13 @@ class GamePads:
             "pagedown": "next_tab",
         }
 
-        # get devices mappings
+        # get devices mappings + axis calibration for the devices found at startup
         pads_configs = GamePads.load_es_dbpads()
         mappings = {}
-        for dev in self._gamepad_devices:
-            mapping = GamePads._find_best_controller_mapping(pads_configs, dev.name, dev.info.bustype, dev.info.vendor, dev.info.product, dev.info.version)
-            if mapping is None:
-                debug_print(f"[GAMEPAD] Warning: No mapping found for gamepad {dev.name}")
-                mappings[dev.fd] = {}  # Empty mapping to prevent errors
-            else:
-                mappings[dev.fd] = mapping
-
-        # Track axis states to detect movement
         axis_states = {}
         axis_infos  = {}
         for dev in self._gamepad_devices:
-            axis_states[dev.fd] = {}
-            axis_infos[dev.fd]  = {}
-            
-            # get axis relaxed values for this specific device
-            relaxValues = self.get_mapping_axis_relaxed_values(dev)
-            
-            if "axis" in mappings[dev.fd]:
-                for code in mappings[dev.fd]["axis"]:
-                    abs_info = dev.absinfo(code)
-                    center = (abs_info.max + abs_info.min) // 2
-                    if code in relaxValues and relaxValues[code]["centered"]:
-                        threshold = (abs_info.max - abs_info.min) // 4  # Original 25% deadzone
-                        bornemin = abs_info.min + threshold
-                        bornemax = abs_info.max - threshold
-                        debug_print(f"[GAMEPAD] Axis {code} centered deadzone: {bornemin} to {bornemax} (threshold: {threshold}, range: {abs_info.min}-{abs_info.max})")
-                    else:
-                        bornemin = abs_info.min -1 # can't reach it
-                        bornemax = center
-                        debug_print(f"[GAMEPAD] Axis {code} non-centered deadzone: {bornemin} to {bornemax} (center: {center}, range: {abs_info.min}-{abs_info.max})")
-                    axis_infos[dev.fd][code] =  { "bornemin": bornemin, "bornemax": bornemax }
-                    
-                    # Initialize axis state properly using the same logic as event handling
-                    current_value = abs_info.value
-                    initial_axis_value = 0
-                    if current_value < bornemin:
-                        initial_axis_value = -1
-                    elif current_value > bornemax:
-                        initial_axis_value = 1
-                    axis_states[dev.fd][code] = initial_axis_value
-            else:
-                pass
+            self._register_device(dev, pads_configs, mappings, axis_infos, axis_states)
 
         # focus require that hotkeys down are received by underlaying apply
         # to not cause issue (retroarch for example think that hotkey remains down, then right alone forwards)
@@ -379,23 +419,49 @@ class GamePads:
         self._grab_devices()
         self._gamepad_running = True
 
+        # Watch udev for gamepad hot-plug/unplug so a controller connected
+        # (or disconnected) after startup doesn't require restarting the app.
+        monitor = pyudev.Monitor.from_netlink(pyudev.Context())
+        monitor.filter_by(subsystem='input')
+        monitor.start()
+
         while self._gamepad_running:
             # 1s timeout (was 0.1s polling) cuts idle wakeups 10/s -> 1/s.
             # Shutdown is immediate: stop_listen() closes the fds, raising
-            # OSError/ValueError out of select.
-            if len(self._gamepad_devices) == 0:
-                break
+            # OSError/ValueError out of select. Note self._gamepad_devices
+            # may be empty (no controller yet) - we still select on the
+            # udev monitor so a later hot-plug is picked up.
             try:
-                r, w, x = select.select(self._gamepad_devices, [], [], 1.0)
+                r, w, x = select.select(self._gamepad_devices + [monitor], [], [], 1.0)
             except (OSError, ValueError):
                 # File descriptor closed during select (shutdown)
                 break
 
             for device in r:
+                if device is monitor:
+                    # Drain all pending udev events non-blockingly.
+                    for udev_dev in iter(lambda: monitor.poll(0), None):
+                        node = udev_dev.device_node
+                        if GamePads.dev2int(str(node)) is None:
+                            continue
+                        if udev_dev.action == 'add':
+                            is_joystick = udev_dev.properties.get("ID_INPUT_JOYSTICK") == "1"
+                            if is_joystick:
+                                self._handle_hotplug_add(node, pads_configs, mappings, axis_infos, axis_states)
+                        elif udev_dev.action == 'remove':
+                            self._handle_hotplug_remove(node, mappings, axis_infos, axis_states)
+                    continue
+
                 try:
                     for event in device.read():
-                        self._handle_event(device, event, mappings[device.fd], axis_infos, axis_states, actions, f_handle_gamepad_action)
+                        self._handle_event(device, event, mappings.get(device.fd, {}), axis_infos, axis_states, actions, f_handle_gamepad_action)
 
+                except OSError as e:
+                    # Device most likely unplugged; the udev 'remove' event
+                    # for it may not have been processed yet. Drop it now
+                    # so select() doesn't spin on a dead fd.
+                    debug_print(f"[GAMEPAD] Device read error, dropping {getattr(device, 'name', device)}: {e}")
+                    self._remove_device(device, mappings, axis_infos, axis_states)
                 except Exception as e:
                     debug_print(f"[GAMEPAD] Error reading event: {e}")
 
