@@ -713,6 +713,9 @@ class UICore:
         def on_map(_w):
             # Ensure window is shown
             win.show_all()
+            # show_all() also reveals widgets hidden by an `if`; re-hide them
+            # before anything is painted so they don't flash.
+            self._reapply_conditional_visibility()
             win.present()
 
             # At boot the display may not be fully enumerated when
@@ -880,6 +883,7 @@ class UICore:
         not get_visible()), so restarting unconditionally here would spawn a
         second, parallel timeout chain double-driving the same frames."""
         old_visible = widget.get_visible()
+        widget._cond_visible = should_show
         widget.set_visible(should_show)
         if (should_show and not old_visible and hasattr(widget, '_animation')
                 and not self._animations_paused
@@ -888,6 +892,77 @@ class UICore:
                                             getattr(widget, '_target_width', None),
                                             getattr(widget, '_target_height', None))
         return old_visible
+
+    def _reapply_conditional_visibility(self):
+        """Re-hide conditional widgets whose `if` is currently false.
+
+        Gtk's show_all() recursively shows every descendant, including the
+        widgets hidden by an `if`, so each show_all() (window map, tab
+        switch) would make them flash until the next recompute. Calling this
+        right after show_all() hides them again in the same main-loop
+        iteration, before anything is painted. Widgets never evaluated yet
+        (no _cond_visible) are left alone."""
+        for widget, _cond in self._conditional_widgets:
+            if getattr(widget, "_cond_visible", None) is False and widget.get_visible():
+                widget.set_visible(False)
+
+    @staticmethod
+    def _is_widget_shown(widget) -> bool:
+        """True if the widget and all its ancestors (up to the toplevel
+        window) are visible; Gtk's get_visible() only reports the widget's
+        own flag."""
+        w = widget
+        while w is not None and not isinstance(w, Gtk.Window):
+            if not w.get_visible():
+                return False
+            w = w.get_parent()
+        return True
+
+    def _is_row_navigable(self, row) -> bool:
+        """A row can take focus only if it is shown and, for vgroup rows,
+        has at least one shown cell with a control."""
+        if not self._is_widget_shown(row):
+            return False
+        cells = getattr(row, "_cells", None)
+        if cells:
+            return any(controls and self._is_widget_shown(ev) for ev, controls in cells)
+        return True
+
+    def _next_navigable_row_index(self, start: int, step: int):
+        """Index of the next navigable row from `start` in direction `step`
+        (wrapping), or None if no row is navigable."""
+        n = len(self.focus_rows)
+        for i in range(1, n + 1):
+            idx = (start + step * i) % n
+            if self._is_row_navigable(self.focus_rows[idx]):
+                return idx
+        return None
+
+    def _ensure_visible_cell(self, row):
+        """Make sure a vgroup row's current cell is a shown one."""
+        cells = getattr(row, "_cells", None)
+        if not cells:
+            return
+        idx = getattr(row, "_cell_index", 0)
+        if 0 <= idx < len(cells):
+            ev, controls = cells[idx]
+            if controls and self._is_widget_shown(ev):
+                return
+        for i, (ev, controls) in enumerate(cells):
+            if controls and self._is_widget_shown(ev):
+                row._cell_index = i
+                ev._control_index = 0
+                return
+
+    def _fix_focus_if_hidden(self):
+        """If a recompute just hid the focused row, move focus to the next
+        visible one so the user never sits on an invisible item."""
+        if not self.focus_rows or self.focus_index >= len(self.focus_rows):
+            return
+        if not self.window or not self.window.get_visible():
+            return
+        if not self._is_row_navigable(self.focus_rows[self.focus_index]):
+            self.move_focus(+1)
 
     def _start_animation_playback(self, img_widget, animation, target_width=None, target_height=None):
         """Start playing an animation with frame rate limiting and optional scaling"""
@@ -1022,7 +1097,17 @@ class UICore:
             
         self.reset_inactivity_timer()  # Reset timer on navigation
         old = self.focus_index
-        self.focus_index = (self.focus_index + delta) % len(self.focus_rows)
+        # Skip rows hidden by an `if` condition (not selectable with the D-pad)
+        step = 1 if delta >= 0 else -1
+        new_index = old
+        for _ in range(max(1, abs(delta))):
+            nxt = self._next_navigable_row_index(new_index, step)
+            if nxt is None:
+                break
+            new_index = nxt
+        if new_index == old and not self._is_row_navigable(self.focus_rows[old]):
+            return  # nothing visible to move to
+        self.focus_index = new_index
 
         prev_row = self.focus_rows[old]
         self.unhighlight_row(prev_row)
@@ -1074,11 +1159,12 @@ class UICore:
         if hasattr(self, '_suppress_controller_focus') and self._suppress_controller_focus:
             return
         
+        self._ensure_visible_cell(row)
         cell_index = getattr(row, "_cell_index", 0)
         if cell_index >= len(row._cells):
             cell_index = 0
             row._cell_index = cell_index
-            
+
         cell_ev, controls = row._cells[cell_index]
         if controls:
             ctrl_idx = getattr(cell_ev, "_control_index", 0)
@@ -1414,6 +1500,8 @@ class UICore:
             return
         self.reset_inactivity_timer()  # Reset timer on activation
         row = self.focus_rows[self.focus_index]
+        if not self._is_row_navigable(row):
+            return  # never activate something hidden by an `if` condition
 
         # For rows with items (buttons/toggles), do nothing when row is selected
         # User must navigate to the specific button first
@@ -1942,6 +2030,9 @@ class UICore:
                 self._update_tab_focus_system()
                 # Also ensure the correct tab is active after visibility changes
                 self._ensure_valid_tab_active()
+
+            # Don't leave the focus on a row that just got hidden
+            self._fix_focus_if_hidden()
 
     def _update_tab_focus_system(self):
         """Update the focus system to only include visible tabs"""
@@ -2501,6 +2592,7 @@ class UICore:
             self._conditional_widgets.append((tab_btn, if_condition))
             debug_print(f"[TAB] added conditional widget for {target}")
             # Initially hide, will be shown after IDs are registered
+            tab_btn._cond_visible = False
             tab_btn.set_visible(False)
 
         # Register ID for tabs (they always produce visual content)
@@ -2780,6 +2872,7 @@ class UICore:
             self._conditional_widgets.append((img, if_condition))
             # Do NOT rely on should_render_element for <img>; we control visibility here
             # Start with it hidden; _recompute_conditionals will decide
+            img._cond_visible = False
             img.set_visible(False)
         else:
             img.set_visible(True)
@@ -3303,6 +3396,7 @@ class UICore:
             # Track this widget for dynamic visibility updates
             self._conditional_widgets.append((container, if_condition))
             # Initially hide, will be shown after IDs are registered
+            container._cond_visible = False
             container.set_visible(False)
         
         # Check if display contains ${...} command substitution
@@ -3647,6 +3741,7 @@ def ui_build_containers(core: UICore, xml_root):
 
     win.connect("map", lambda *_: _init_focus(core))
     win.show_all()
+    core._reapply_conditional_visibility()
 
     # After show_all, find rows in tab content
     if tab_row and hasattr(tab_row, '_tabs') and tab_row._tabs:
@@ -3687,6 +3782,7 @@ def ui_build_containers(core: UICore, xml_root):
         # Show footer widgets since they were added after win.show_all()
         sep.show()
         footer_box.show_all()
+        core._reapply_conditional_visibility()
 
     return win
 
@@ -3733,6 +3829,8 @@ def _init_focus(core: UICore):
     for i, row in enumerate(core.focus_rows):
         if getattr(row, "_is_header_row", False):
             continue   # skip header rows as init target
+        if not core._is_row_navigable(row):
+            continue   # hidden by an `if` condition
         # Skip header rows without controls
         if hasattr(row, "_cells") and row._cells:
             # Check if this row has any controls
@@ -3891,6 +3989,7 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool, is_footer: bool = False
             # _build_feature_row does, so that the "if heartbeat" manages its visibility.
             if if_cond:
                 core._conditional_widgets.append((cell_event, if_cond))
+                cell_event._cond_visible = False
                 cell_event.set_visible(False)
 
             # Add feature label if present
@@ -3946,6 +4045,16 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool, is_footer: bool = False
                     cell_controls.append(btn)
                     # Add touchscreen synchronization
                     core.add_touch_sync_to_widget(btn)
+                elif sub.kind == "toggle":
+                    tog = core.build_toggle(child, sub, cell_box, pack_end=False)
+                    tog.set_can_focus(True)
+                    cell_controls.append(tog)
+                    core.add_touch_sync_to_widget(tog)
+                elif sub.kind == "switch":
+                    switch = core.build_switch(child, sub, cell_box, pack_end=False)
+                    switch.set_can_focus(True)
+                    cell_controls.append(switch)
+                    core.add_touch_sync_to_widget(switch)
 
             # Make cell focusable if it has controls
             if cell_controls:
@@ -4371,8 +4480,8 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool, is_footer: bool = False
                 # Move to previous cell with controls
                 new_cell_idx = row._cell_index - 1
                 while new_cell_idx >= 0:
-                    _, controls = row._cells[new_cell_idx]
-                    if controls:
+                    ev, controls = row._cells[new_cell_idx]
+                    if controls and core._is_widget_shown(ev):
                         _clear_all_highlights()
                         row._cell_index = new_cell_idx
                         row._cells[new_cell_idx][0]._control_index = len(controls) - 1
@@ -4394,8 +4503,8 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool, is_footer: bool = False
                 # Move to next cell with controls
                 new_cell_idx = row._cell_index + 1
                 while new_cell_idx < len(row._cells):
-                    _, controls = row._cells[new_cell_idx]
-                    if controls:
+                    ev, controls = row._cells[new_cell_idx]
+                    if controls and core._is_widget_shown(ev):
                         _clear_all_highlights()
                         row._cell_index = new_cell_idx
                         row._cells[new_cell_idx][0]._control_index = 0
@@ -4405,14 +4514,16 @@ def _build_vgroup_row(core: UICore, vg, is_header: bool, is_footer: bool = False
 
         def on_row_activate():
             """Activate current control"""
+            core._ensure_visible_cell(row)
             cell_ev, controls = row._cells[row._cell_index]
-            if controls:
+            if controls and core._is_widget_shown(cell_ev):
                 ctrl_idx = getattr(cell_ev, "_control_index", 0)
                 ctrl_idx = max(0, min(len(controls) - 1, ctrl_idx))
                 _activate_widget(controls[ctrl_idx])
 
         def on_row_focus_in(_w, *_args):
             _clear_all_highlights()
+            core._ensure_visible_cell(row)
             _apply_current_highlight()
 
         def on_row_focus_out(_w, *_args):
@@ -4475,6 +4586,7 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
         # Track this widget for dynamic visibility updates
         core._conditional_widgets.append((row, if_condition))
         # Initially hide, will be shown after IDs are registered
+        row._cond_visible = False
         row.set_visible(False)
 
     # For choice features, add the Select button right after the label
@@ -4583,6 +4695,7 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
                 # Track this widget for dynamic visibility updates
                 core._conditional_widgets.append((lbl, if_condition))
                 # Initially hide, will be shown after IDs are registered
+                lbl._cond_visible = False
                 lbl.set_visible(False)
 
             # Check if display contains ${...} command substitution
@@ -4747,6 +4860,8 @@ def _build_feature_row(core: UICore, feat) -> Gtk.EventBox:
                                     # Insert frame into content_box
                                     content_box.pack_start(content_widget._frame, False, False, 0)
                                     content_widget._frame.show_all()
+                                    # keep rows hidden by an `if` hidden (no flash on tab switch)
+                                    core._reapply_conditional_visibility()
                                 # Add this tab's rows back to focus_rows with small delay to ensure realization
                                 if hasattr(content_widget, '_tab_rows'):
                                     def delayed_add_tab_rows():
